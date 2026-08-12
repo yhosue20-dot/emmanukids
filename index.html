@@ -328,6 +328,33 @@ function precioPor(lineaId,cant,tipoVenta){
 /* ═══════════ ACCIONES ═══════════════════════════════════ */
 const A={};
 
+/* --- Ajuste de inventario: corregir conteo, mermas o pruebas --- */
+A.ajustarInv=(tipo,k)=>{
+  const nom=tipo==='L'?nomL(k):nomT(k);
+  const inv=tipo==='L'?invL(k):invT(k);
+  const v=prompt('Ajustar '+nom+'\n\nAhora la app dice: '+inv.cant+
+    ' unidades.\n¿Cuántas hay realmente? (0 para borrarlas todas)', inv.cant);
+  if(v===null) return;
+  const real=Math.max(0,Math.round(+String(v).replace(/[^\d]/g,'')||0));
+  if(real===inv.cant) return decir('Ese ya es el saldo que tiene','err');
+  const motivo=prompt('¿Por qué el ajuste?\n(ej: prueba, se dañó, mal contado, regalada)','Ajuste')||'Ajuste';
+  correr(()=>{
+    const f=hoy(), dif=real-inv.cant, cu=tipo==='L'?costoL(k):costoT(k);
+    const cuenta=tipo==='L'?'1435 Inventario lisas':'1430 Inventario estampadas';
+    if(dif<0){
+      const c=salida(tipo,k,-dif,{f,t:'AJUSTE',ref:motivo});
+      asiento(f,'Ajuste inventario · '+nom+' · '+motivo,
+        [{cuenta:'5299 Pérdida de inventario',d:c*-dif},{cuenta,c:c*-dif}]);
+    }else{
+      const base=cu||0;
+      entrada(tipo,k,dif,base,{f,t:'AJUSTE',ref:motivo});
+      asiento(f,'Ajuste inventario · '+nom+' · '+motivo,
+        [{cuenta,d:base*dif},{cuenta:'3115 Capital',c:base*dif}]);
+    }
+    return {nom,real};
+  },[],r=>r.nom+' quedó en '+r.real+' unidades');
+};
+
 /* --- Compras --- */
 A.addCompraFila=()=>{
   const c=val('cCol'), t=val('cTal'), q=nval('cCant'), cu=nval('cCosto');
@@ -440,19 +467,60 @@ A.guardarApertura=()=>{
   },[],()=>{tmp.apertura={L:[],T:[]};
     return num(unidades)+' camisetas cargadas por '+cop(total)+'. La caja no se movió.'});
 };
+/* --- Saldo inicial de caja y bancos (o ajuste si no cuadra) --- */
+A.fijarSaldo=()=>{
+  const qId=val('sCuenta'), real=nval('sReal'), f=val('sFecha')||hoy();
+  if(!qId) return decir('Escoge la cuenta','err');
+  correr(()=>{
+    const q=cuenta(qId);
+    const dif=real-q.saldo;
+    if(dif===0) throw new Error('Ese ya es el saldo que tiene '+q.n);
+    mover(qId,dif>0?'INGRESO':'EGRESO',Math.abs(dif),'Ajuste de saldo',f);
+    asiento(f,'Ajuste de saldo · '+q.n, dif>0
+      ?[{cuenta:'1105 Caja y bancos',d:dif},{cuenta:'3115 Capital',c:dif}]
+      :[{cuenta:'3115 Capital',d:-dif},{cuenta:'1105 Caja y bancos',c:-dif}]);
+    return {n:q.n,dif,real};
+  },[],r=>{ $('sReal').value='';
+    return r.n+' quedó en '+cop(r.real)+' ('+(r.dif>0?'+':'−')+cop(Math.abs(r.dif))+')' });
+};
+/* Lisas de esa referencia que ya están comprometidas en el carrito */
+function lisasEnCarrito(kl,menosId){
+  return (tmp.carrito||[]).filter(x=>x.xm&&x.kl===kl&&x.id!==menosId)
+    .reduce((s,x)=>s+x.cant,0);
+}
 A.agregar=k=>{
   if(invT(k).cant<=0) return decir('Esa referencia está agotada','err');
   tmp.carrito=tmp.carrito||[];
-  const ex=tmp.carrito.find(x=>x.k===k);
+  const ex=tmp.carrito.find(x=>x.id===k);
   if(ex){ if(ex.cant>=invT(k).cant) return decir('Solo quedan '+invT(k).cant+' unidades','err'); ex.cant++ }
-  else tmp.carrito.push({k,cant:1});
+  else tmp.carrito.push({id:k,k,cant:1});
   pintar();
 };
-A.cant=(k,d)=>{
-  const c=tmp.carrito.find(x=>x.k===k); if(!c)return;
-  if(d>0&&c.cant>=invT(k).cant) return decir('No hay más unidades disponibles','err');
+/* Estampar al momento: sale de lisas, se estampa y se vende en la misma venta */
+A.agregarXM=()=>{
+  const d=usaDis()?val('xDis'):DGEN, l=val('xLin'), c=val('xCol'), t=val('xTal'), q=nval('xCant')||1;
+  if(usaDis()&&!d) return decir('Primero crea el diseño en Ajustes','err');
+  if(!l||!c||!t) return decir('Escoge línea, color y talla','err');
+  const kl=kL(c,t), hay=invL(kl).cant;
+  if(hay<=0) return decir('No hay lisas '+nomL(kl)+' en bodega','err');
+  const k=kT(d,l,c,t), idx=k+'#X';
+  tmp.carrito=tmp.carrito||[];
+  const ex=tmp.carrito.find(x=>x.id===idx);
+  const yaOtras=lisasEnCarrito(kl,idx);
+  const tope=hay-yaOtras;
+  const nueva=(ex?ex.cant:0)+q;
+  if(nueva>tope) return decir('Solo quedan '+tope+' lisas '+nomL(kl)+' libres','err');
+  if(ex) ex.cant=nueva; else tmp.carrito.push({id:idx,k,kl,xm:true,cant:q});
+  tmp.xm=false; pintar();
+};
+A.cant=(id,d)=>{
+  const c=(tmp.carrito||[]).find(x=>x.id===id); if(!c)return;
+  if(d>0){
+    const tope=c.xm?invL(c.kl).cant-lisasEnCarrito(c.kl,c.id):invT(c.k).cant;
+    if(c.cant>=tope) return decir('No hay más unidades disponibles','err');
+  }
   c.cant+=d;
-  if(c.cant<=0) tmp.carrito=tmp.carrito.filter(x=>x.k!==k);
+  if(c.cant<=0) tmp.carrito=tmp.carrito.filter(x=>x.id!==id);
   pintar();
 };
 function lineasCarrito(){
@@ -465,7 +533,7 @@ function lineasCarrito(){
   const pack={};
   if(tv==='PACK'){
     const grupos={};
-    carro.forEach(c=>{ if(man[c.k]!=null) return;
+    carro.forEach(c=>{ if(man[c.id]!=null) return;
       const l=c.k.split('|')[1]; grupos[l]=(grupos[l]||0)+c.cant });
     Object.entries(grupos).forEach(([l,n])=>{
       const L=linea(l), P=L.pack||{und:3,precio:L.precio*3};
@@ -479,22 +547,22 @@ function lineasCarrito(){
   return carro.map(c=>{
     const l=c.k.split('|')[1];
     let p, origen;
-    if(man[c.k]!=null){ p=man[c.k]; origen='manual' }
+    if(man[c.id]!=null){ p=man[c.id]; origen='manual' }
     else if(tv==='PACK'&&pack[l]){ p=pack[l].unit; origen='pack' }
     else { p=precioPor(l,c.cant,tv); origen=tv.toLowerCase() }
-    const neto=p*c.cant, cu=costoT(c.k);
+    const neto=p*c.cant, cu=c.xm?costoL(c.kl)+(linea(l).estampado||0):costoT(c.k);
     return {...c,precio:p,origen,neto,cu,costo:cu*c.cant,util:neto-cu*c.cant};
   });
 }
 A.tipoVenta=t=>{tmp.tipoVenta=t;pintar()};
-A.precio=k=>{
-  const actual=lineasCarrito().find(l=>l.k===k);
-  const v=prompt('Precio por unidad\n'+nomT(k)+'\n\nDeja vacío para volver al precio de la lista:',
+A.precio=id=>{
+  const actual=lineasCarrito().find(l=>l.id===id);
+  const v=prompt('Precio por unidad\n'+nomT(actual?actual.k:id)+'\n\nDeja vacío para volver al precio de la lista:',
     Math.round(actual?actual.precio:0));
   if(v===null) return;
   tmp.precioMan=tmp.precioMan||{};
   const n=+String(v).replace(/[^\d]/g,'');
-  if(!n) delete tmp.precioMan[k]; else tmp.precioMan[k]=n;
+  if(!n) delete tmp.precioMan[id]; else tmp.precioMan[id]=n;
   pintar();
 };
 A.cobrar=fiado=>{
@@ -520,12 +588,21 @@ A.cobrar=fiado=>{
     // aunque dos vendan al mismo segundo, no se repite el número.
     const nro='A-'+String(S.consecutivo+1).padStart(5,'0');
     PEND.cfg={consecutivo:S.consecutivo+1};
+    let costoLisas=0, estTotal=0;
     const det=ls.map(l=>{
+      // Estampado al momento: la lisa sale de bodega, se estampa y entra ya lista
+      if(l.xm){
+        const est=linea(l.k.split('|')[1]).estampado||0;
+        const cul=salida('L',l.kl,l.cant,{f,t:'ESTAMPADO',ref:nro});
+        costoLisas+=cul*l.cant; estTotal+=est*l.cant;
+        entrada('T',l.k,l.cant,cul+est,{f,t:'ESTAMPADO',ref:nro});
+      }
       const cu=salida('T',l.k,l.cant,{f,t:'VENTA',ref:nro});
-      return {k:l.k,cant:l.cant,precio:l.precio,origen:l.origen,neto:l.neto,cu,
+      return {k:l.k,cant:l.cant,precio:l.precio,origen:l.origen,neto:l.neto,cu,xm:!!l.xm,
               costo:cu*l.cant,util:l.neto-cu*l.cant};
     });
     const costoReal=det.reduce((s,d)=>s+d.costo,0);
+    if(estTotal>0&&qId) mover(qId,'EGRESO',estTotal,'Transfers venta '+nro,f);
     nuevoDoc('facturas',{nro,f,cliente:clId,tipo:tipoV,det,total,
       abonado:recibido,saldo,costo:costoReal,util:total-costoReal,limite,cuentaPago:qId,
       estado:saldo<=0?'PAGADA':(recibido>0?'PARCIAL':'PENDIENTE')});
@@ -538,7 +615,10 @@ A.cobrar=fiado=>{
       {cuenta:'1305 Clientes',d:saldo},
       {cuenta:'4135 Ventas',c:total},
       {cuenta:'6135 Costo de ventas',d:costoReal},
-      {cuenta:'1430 Inventario estampadas',c:costoReal}]);
+      {cuenta:'1430 Inventario estampadas',c:costoReal},
+      {cuenta:'1430 Inventario estampadas',d:costoLisas+estTotal},
+      {cuenta:'1435 Inventario lisas',c:costoLisas},
+      {cuenta:'1105 Caja y bancos',c:estTotal}]);
     return nro;
   },[],nro=>{tmp.carrito=[];tmp.precioMan={};tmp.cobrando=false;
     return 'Factura '+nro+' por '+cop(total)+(saldo>0?' · queda debiendo '+cop(saldo):'')});
@@ -930,7 +1010,9 @@ function vInventario(){
         <div><div class="t"><span class="punto" style="background:${color(c).hex}"></span> ${esc(nomT(k))}</div>
           <div class="s">Costo ${cop(v.valor/v.cant)} · vende a ${cop(linea(lin).precio)}</div></div>
         <div class="m"><span class="cifra ${bajo(k)?'':''}">${v.cant}</span>
-          ${bajo(k)?'<div><span class="tag rojo">bajo</span></div>':''}</div></div>`}).join('')
+          ${bajo(k)?'<div><span class="tag rojo">bajo</span></div>':''}</div>
+        ${admin()?`<button class="b g chico" style="min-height:30px;padding:0 9px;margin-left:8px"
+          onclick="A.ajustarInv('T','${k}')" title="Corregir cantidad">✎</button>`:''}</div>`}).join('')
       :'<div class="vacio">No hay camisetas estampadas. Registra una producción en Taller.</div>'}
   </div>
 
@@ -938,7 +1020,9 @@ function vInventario(){
     ${l.length?l.map(([k,v])=>`<div class="item">
       <div><div class="t"><span class="punto" style="background:${color(k.split('|')[0]).hex}"></span> ${esc(nomL(k))}</div>
         <div class="s">Costo promedio ${cop(v.valor/v.cant)}</div></div>
-      <div class="m cifra">${v.cant}</div></div>`).join('')
+      <div class="m cifra">${v.cant}</div>
+      ${admin()?`<button class="b g chico" style="min-height:30px;padding:0 9px;margin-left:8px"
+        onclick="A.ajustarInv('L','${k}')" title="Corregir cantidad">✎</button>`:''}</div>`).join('')
       :'<div class="vacio">No hay lisas. Registra una compra.</div>'}
   </div>
 
@@ -954,6 +1038,13 @@ function vInventario(){
 }
 
 /* ── Vender ─────────────────────────────────────────────── */
+function lisasDisp(){
+  const hay=Object.entries(S.lisas).filter(([k,v])=>v.cant>0);
+  if(!hay.length) return `<div style="font-size:12px;color:var(--tinta);margin-top:10px">
+    No tienes lisas en bodega. Regístralas en Compras o en la carga inicial.</div>`;
+  return `<div style="font-size:11.5px;color:var(--suave);margin-top:10px;line-height:1.6">
+    <b>Lisas disponibles:</b><br>${hay.map(([k,v])=>esc(nomL(k))+' · '+v.cant).join('<br>')}</div>`;
+}
 function vVender(){
   const q=(tmp.busq||'').toLowerCase();
   const lista=Object.entries(S.terminados).filter(([k,v])=>v.cant>0)
@@ -973,6 +1064,28 @@ function vVender(){
         onclick="A.tipoVenta('${t}')">${n}</button>`).join('')}
   </div>
 
+  ${tmp.xm?`<div class="card" style="margin-bottom:12px">
+    <h3>Estampar al momento</h3>
+    <p style="font-size:12.5px;color:var(--suave);margin:0 0 10px">
+      Saca la lisa de bodega, la estampa y la vende en la misma operación.</p>
+    ${usaDis()&&!S.disenos.length?'<div class="aviso err">Crea primero los diseños en Ajustes.</div>':''}
+    <div class="${usaDis()?'g2':''}">
+      ${usaDis()?`<select id="xDis">${S.disenos.map(d=>`<option value="${d.id}">${esc(d.n)}</option>`).join('')}</select>`:''}
+      <select id="xLin">${S.lineas.map(x=>`<option value="${x.id}">${esc(x.n)}</option>`).join('')}</select>
+    </div>
+    <div class="g3" style="margin-top:8px">
+      <select id="xCol">${optColor()}</select>
+      <select id="xTal">${optTalla()}</select>
+      <input id="xCant" inputmode="numeric" placeholder="Cant." value="1">
+    </div>
+    <div class="g2" style="margin-top:10px">
+      <button class="b g" onclick="tmp.xm=false;pintar()">Cancelar</button>
+      <button class="b" onclick="A.agregarXM()">Al carrito</button>
+    </div>
+    ${lisasDisp()}
+  </div>`:`<button class="b g" style="margin-bottom:12px" onclick="tmp.xm=true;pintar()">
+    ✂ Estampar al momento</button>`}
+
   <div id="listaProd" style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
     ${lista.length?lista.map(([k,v])=>{
       const [,lin,c,t]=k.split('|'), [d]=k.split('|');
@@ -991,15 +1104,16 @@ function vVender(){
   ${ls.length?`<div class="barra">
     ${ls.map(l=>`<div class="item">
       <div style="flex:1;min-width:0">
-        <div class="t" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(nomT(l.k))}</div>
-        <button onclick="A.precio('${l.k}')" style="border:0;background:none;padding:2px 0;
+        <div class="t" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${
+          l.xm?'<span class="tag" style="margin-right:4px">✂ al momento</span>':''}${esc(nomT(l.k))}</div>
+        <button onclick="A.precio('${l.id}')" style="border:0;background:none;padding:2px 0;
           font-size:12px;color:${l.origen==='manual'?'var(--tinta)':'var(--suave)'};
           font-variant-numeric:tabular-nums;font-weight:${l.origen==='manual'?'700':'400'}">
           ${cop(l.precio)} c/u ✎${l.origen==='manual'?' (fijado)':''}</button></div>
       <div style="display:flex;align-items:center;gap:6px">
-        <button class="b g chico" style="min-height:34px;padding:0 11px" onclick="A.cant('${l.k}',-1)">−</button>
+        <button class="b g chico" style="min-height:34px;padding:0 11px" onclick="A.cant('${l.id}',-1)">−</button>
         <b class="cifra" style="min-width:20px;text-align:center">${l.cant}</b>
-        <button class="b g chico" style="min-height:34px;padding:0 11px" onclick="A.cant('${l.k}',1)">+</button>
+        <button class="b g chico" style="min-height:34px;padding:0 11px" onclick="A.cant('${l.id}',1)">+</button>
       </div>
       <div class="m cifra" style="min-width:74px">${cop(l.neto)}</div>
     </div>`).join('')}
@@ -1118,6 +1232,19 @@ function vCaja(){
       <div class="m cifra">${cop(q.saldo)}</div></div>`).join('')}
     <div class="item" style="border-top:1px solid var(--linea)"><div class="t">Total</div>
       <div class="m cifra">${cop(S.cuentas.reduce((s,q)=>s+q.saldo,0))}</div></div>
+  </div>
+
+  <div class="card"><h3>Saldo inicial · ajuste</h3>
+    <p style="font-size:13px;color:var(--suave);margin:0 0 12px">
+      Escribe cuánta plata hay <b>de verdad</b> en la cuenta. La app calcula la diferencia
+      y la registra como aporte tuyo. Úsalo al arrancar y cuando el saldo no cuadre.</p>
+    <div class="g2">
+      <div><label>Fecha</label><input type="date" id="sFecha" value="${hoy()}"></div>
+      <div><label>Cuenta</label><select id="sCuenta">${optCuenta()}</select></div>
+    </div>
+    <label>¿Cuánto hay realmente?</label>
+    <input id="sReal" inputmode="numeric" placeholder="0">
+    <button class="b" style="margin-top:12px" onclick="A.fijarSaldo()">Fijar saldo</button>
   </div>
 
   <div class="card"><h3>Registrar gasto</h3>
