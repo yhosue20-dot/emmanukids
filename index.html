@@ -939,6 +939,11 @@ A.delCat=(lista,i)=>{ if(!confirm('¿Borrar?'))return;
   if(lista==='cuentas') setDoc(rCue,{lista:S.cuentas}); else guardarCfg({[lista]:S[lista]});
   pintar() };
 A.guardarPrecios=()=>{
+  // Un precio de venta en 0 haría que todo se venda regalado: no se guarda.
+  for(let i=0;i<S.lineas.length;i++){
+    if(nval('lp'+i)<=0) return decir('El precio al detal de '+
+      (val('ln'+i)||S.lineas[i].n)+' no puede quedar en 0','err');
+  }
   S.lineas.forEach((L,i)=>{
     L.n=val('ln'+i).trim()||L.n;
     L.precio=nval('lp'+i); L.estampado=nval('le'+i); L.margenMin=nval('lm'+i);
@@ -1033,11 +1038,16 @@ function vInicio(){
   <div class="card"><h3>Inventario</h3>
     <div class="g2">
       <div><div class="et" style="font-size:10.5px;color:var(--suave);font-weight:700">Lisas</div>
-        <div style="font-size:20px;font-weight:800" class="cifra">${num(lisas)}</div></div>
+        <div style="font-size:20px;font-weight:800" class="cifra">${num(lisas)}</div>
+        <div style="font-size:12px;color:var(--suave)" class="cifra">${
+          cop(Object.values(S.lisas).reduce((s,v)=>s+v.valor,0))}</div></div>
       <div><div class="et" style="font-size:10.5px;color:var(--suave);font-weight:700">Estampadas</div>
-        <div style="font-size:20px;font-weight:800" class="cifra">${num(term)}</div></div>
+        <div style="font-size:20px;font-weight:800" class="cifra">${num(term)}</div>
+        <div style="font-size:12px;color:var(--suave)" class="cifra">${
+          cop(Object.values(S.terminados).reduce((s,v)=>s+v.valor,0))}</div></div>
     </div>
-    <div class="d" style="font-size:12px;color:var(--suave);margin-top:6px">Valor en bodega: ${cop(valorInv)}</div>
+    <div class="d" style="font-size:12px;color:var(--suave);margin-top:8px;padding-top:8px;
+      border-top:1px solid var(--linea)">Valor total en bodega: <b>${cop(valorInv)}</b></div>
   </div>
 
   <div class="card"><h3>Lo más vendido este mes</h3>
