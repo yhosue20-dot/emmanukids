@@ -112,7 +112,7 @@ import {initializeApp} from 'https://www.gstatic.com/firebasejs/10.12.2/firebase
 import {getAuth,signInWithEmailAndPassword,signOut,onAuthStateChanged}
   from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
 import {getFirestore,doc,collection,onSnapshot,query,orderBy,limit,
-  runTransaction,setDoc,getDoc,enableIndexedDbPersistence}
+  runTransaction,setDoc,getDoc,getDocs,writeBatch,enableIndexedDbPersistence}
   from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 
 /* ╔═══════════════════════════════════════════════════════╗
@@ -669,6 +669,84 @@ A.anular=facId=>{
   },[ref],nro=>'Factura '+nro+' anulada');
 };
 
+/* --- Anular orden de producción: devuelve las lisas y quita las estampadas --- */
+A.anularOrden=id=>{
+  const o=S.ordenes.find(x=>x._id===id); if(!o)return;
+  if(o.estado==='ANULADA') return;
+  if(!confirm('¿Anular '+o.ref+'?\n\nLas '+o.buenas+' estampadas salen del inventario y las '+
+    o.procesadas+' lisas vuelven a bodega.')) return;
+  const f=hoy(), ref=doc(db,'ordenes',id);
+  correr(ex=>{
+    const d0=ex[0].data();
+    if(d0.estado==='ANULADA') throw new Error('Otra persona ya anuló esta orden');
+    const cuL=d0.procesadas>0?d0.costoLisas/d0.procesadas:0;
+    d0.filas.forEach(r=>{
+      const b=r.cant-r.merma;
+      const [c,t]=r.k.split('|');
+      if(b>0) salida('T',kT(d0.diseno,d0.linea,c,t),b,{f,t:'ANULACION',ref:d0.ref});
+      entrada('L',r.k,r.cant,cuL,{f,t:'ANULACION',ref:d0.ref});
+    });
+    const desembolso=d0.est*d0.procesadas+d0.mo;
+    if(desembolso>0) mover(S.cuentas[0].id,'INGRESO',desembolso,'Anulación '+d0.ref,f);
+    asiento(f,'Anulación '+d0.ref,[
+      {cuenta:'1435 Inventario lisas',d:d0.costoLisas},
+      {cuenta:'1105 Caja y bancos',d:desembolso},
+      {cuenta:'1430 Inventario estampadas',c:d0.costoTotal}]);
+    PEND.updates.push({ref,data:{estado:'ANULADA'}});
+    return d0.ref;
+  },[ref],r=>'Orden '+r+' anulada · las lisas volvieron a bodega');
+};
+
+/* --- Anular compra: saca las lisas y devuelve la plata --- */
+A.anularCompra=id=>{
+  const c=S.compras.find(x=>x._id===id); if(!c)return;
+  if(c.estado==='ANULADA') return;
+  if(!confirm('¿Anular la compra '+(c.nro||c.ref)+'?\n\nLas lisas salen del inventario'+
+    (c.credito?' y se borra la deuda con el proveedor.':' y la plata vuelve a la cuenta.'))) return;
+  const f=hoy(), ref=doc(db,'compras',id);
+  correr(ex=>{
+    const d0=ex[0].data();
+    if(d0.estado==='ANULADA') throw new Error('Otra persona ya anuló esta compra');
+    d0.items.forEach(i=>salida('L',i.k,i.cant,{f,t:'ANULACION',ref:d0.ref}));
+    if(!d0.credito&&d0.cuenta) mover(d0.cuenta,'INGRESO',d0.total,'Anulación '+d0.ref,f);
+    asiento(f,'Anulación compra '+d0.ref,[
+      {cuenta:d0.credito?'2205 Proveedores':'1105 Caja y bancos',d:d0.total},
+      {cuenta:'1435 Inventario lisas',c:d0.total}]);
+    PEND.updates.push({ref,data:{estado:'ANULADA'}});
+    return d0.nro||d0.ref;
+  },[ref],r=>'Compra '+r+' anulada');
+};
+
+/* --- Empezar de cero: borra movimientos, deja los catálogos --- */
+A.empezarCero=async()=>{
+  if(!admin()) return decir('Solo el administrador','err');
+  if(!confirm('BORRAR TODOS LOS MOVIMIENTOS\n\n'+
+    'Se van: facturas, compras, producciones, gastos, abonos, movimientos de caja e inventario.\n'+
+    'Se quedan: colores, tallas, diseños, clientes, proveedores y precios.\n\n'+
+    'Esto NO se puede deshacer. ¿Seguir?')) return;
+  const w=prompt('Escribe BORRAR (en mayúsculas) para confirmar:');
+  if(w!=='BORRAR') return decir('Cancelado');
+  decir('Borrando… no cierres la página');
+  try{
+    const cols=['facturas','compras','ordenes','gastos','pagos','kardex','caja','asientos'];
+    for(const c of cols){
+      let quedan=true;
+      while(quedan){
+        const s=await getDocs(query(collection(db,c),limit(400)));
+        if(s.empty){ quedan=false; break }
+        const b=writeBatch(db);
+        s.docs.forEach(d=>b.delete(d.ref));
+        await b.commit();
+        quedan=s.size===400;
+      }
+    }
+    await setDoc(rInv,{lisas:{},terminados:{}});
+    await setDoc(rCue,{lista:S.cuentas.map(q=>({...q,saldo:0}))});
+    await setDoc(rCfg,{consecutivo:0,consCompra:0,consOrden:0},{merge:true});
+    decir('Listo · todo en cero. Ya puedes cargar tu inventario real.');
+  }catch(e){ decir('No se pudo borrar todo: '+(e.message||'revisa la conexión'),'err') }
+};
+
 /* --- Gastos --- */
 A.guardarGasto=()=>{
   const m=nval('gMonto'), d=val('gDesc');
@@ -862,8 +940,10 @@ function vCompras(){
 
   <div class="card"><h3>Compras recientes</h3>
     ${S.compras.slice().reverse().slice(0,15).map(c=>`<div class="item">
-      <div><div class="t">${esc(c.nro||c.ref)}</div>
-        <div class="s">${fecha(c.f)} · ${esc(c.prov||'sin proveedor')} · ${num(c.items.reduce((s,i)=>s+i.cant,0))} und</div></div>
+      <div><div class="t">${esc(c.nro||c.ref)}${c.estado==='ANULADA'?' <span class="tag rojo">ANULADA</span>':''}</div>
+        <div class="s">${fecha(c.f)} · ${esc(c.prov||'sin proveedor')} · ${num(c.items.reduce((s,i)=>s+i.cant,0))} und</div>
+        ${c.estado!=='ANULADA'&&admin()?`<div style="margin-top:6px">
+          <button class="b g chico" onclick="A.anularCompra('${c._id}')">Anular</button></div>`:''}</div>
       <div class="m cifra">${cop(c.total)}</div></div>`).join('')||'<div class="vacio">Aún no has registrado compras.</div>'}
   </div>`;
 }
@@ -920,8 +1000,11 @@ function vTaller(){
 
   <div class="card"><h3>Producciones anteriores</h3>
     ${S.ordenes.slice().reverse().slice(0,15).map(o=>`<div class="item">
-      <div><div class="t">${usaDis()?esc(diseno(o.diseno).n)+' · ':''}${esc(linea(o.linea).n)}</div>
-        <div class="s">${fecha(o.f)} · ${o.buenas} buenas${o.merma?', '+o.merma+' dañadas':''}</div></div>
+      <div><div class="t">${usaDis()?esc(diseno(o.diseno).n)+' · ':''}${esc(linea(o.linea).n)}${
+        o.estado==='ANULADA'?' <span class="tag rojo">ANULADA</span>':''}</div>
+        <div class="s">${o.ref||''} · ${fecha(o.f)} · ${o.buenas} buenas${o.merma?', '+o.merma+' dañadas':''}</div>
+        ${o.estado!=='ANULADA'&&admin()?`<div style="margin-top:6px">
+          <button class="b g chico" onclick="A.anularOrden('${o._id}')">Anular</button></div>`:''}</div>
       <div class="m cifra">${cop(o.cu)}<div class="s" style="font-weight:400">c/u</div></div></div>`).join('')
       ||'<div class="vacio">Todavía no has registrado estampados.</div>'}
   </div>`;
@@ -1276,7 +1359,7 @@ function vReportes(){
   const fs=S.facturas.filter(f=>f.estado!=='ANULADA'&&f.f>=d&&f.f<=ha);
   const gs=S.gastos.filter(g=>g.f>=d&&g.f<=ha);
   const cs=S.compras.filter(c=>c.f>=d&&c.f<=ha);
-  const os=S.ordenes.filter(o=>o.f>=d&&o.f<=ha);
+  const os=S.ordenes.filter(o=>o.estado!=='ANULADA'&&o.f>=d&&o.f<=ha);
   const venta=fs.reduce((s,f)=>s+f.total,0);
   const costo=fs.reduce((s,f)=>s+f.costo,0);
   const gasto=gs.reduce((s,g)=>s+g.monto,0);
@@ -1429,7 +1512,17 @@ function vAjustes(){
       Conectado como <b>${esc(yo.nombre)}</b> (${yo.rol==='ADMIN'?'administrador':'vendedor'}).
       Los datos están en Firebase, no en este teléfono.
     </div>
-  </div>`;
+  </div>
+
+  ${admin()?`<div class="card" style="border:1px solid var(--tinta)">
+    <h3 style="color:var(--tinta)">Empezar de cero</h3>
+    <p style="font-size:13px;color:var(--suave);margin:0 0 12px">
+      Borra todas las facturas, compras, producciones, gastos, movimientos de caja
+      y el inventario completo. Los colores, tallas, diseños, clientes y precios se quedan.
+      Úsalo una sola vez, cuando termines de hacer pruebas.
+      <b>Descarga primero el respaldo de arriba.</b></p>
+    <button class="b" style="background:var(--tinta)" onclick="A.empezarCero()">Borrar todos los movimientos</button>
+  </div>`:''}`;
 }
 
 /* ═══════════ PINTAR ═════════════════════════════════════ */
