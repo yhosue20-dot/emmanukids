@@ -228,7 +228,7 @@ function nuevo(){
     proveedores:[],
     cuentas:[{id:'q1',n:'Efectivo',saldo:0},{id:'q2',n:'Nequi',saldo:0},
              {id:'q3',n:'Daviplata',saldo:0},{id:'q4',n:'Bancolombia',saldo:0}],
-    catGastos:['Arriendo','Servicios','Transporte','Publicidad','Insumos taller','Otros'],
+    catGastos:['Arriendo','Servicios','Envíos','Transporte','Publicidad','Insumos taller','Otros'],
     lisas:{}, terminados:{},
     compras:[], ordenes:[], facturas:[], pagos:[], gastos:[],
     kardex:[], caja:[], asientos:[],
@@ -555,6 +555,19 @@ A.guardarApertura=()=>{
     return num(unidades)+' camisetas cargadas por '+cop(total)+'. La caja no se movió.'});
 };
 /* --- Saldo inicial de caja y bancos (o ajuste si no cuadra) --- */
+A.traslado=()=>{
+  const de=val('tDe'), a=val('tA'), m=nval('tMonto'), f=val('tFecha')||hoy();
+  if(!de||!a) return decir('Escoge las dos cuentas','err');
+  if(de===a) return decir('Son la misma cuenta','err');
+  if(m<=0) return decir('Escribe cuánto vas a pasar','err');
+  correr(()=>{
+    const q1=cuenta(de), q2=cuenta(a);
+    if(q1.saldo<m) throw new Error('En '+q1.n+' solo hay '+cop(q1.saldo));
+    mover(de,'EGRESO',m,'Traslado a '+q2.n,f);
+    mover(a,'INGRESO',m,'Traslado desde '+q1.n,f);
+    return {a:q1.n,b:q2.n,m};
+  },[],r=>{$('tMonto').value='';return cop(r.m)+' pasaron de '+r.a+' a '+r.b});
+};
 A.fijarSaldo=()=>{
   const qId=val('sCuenta'), real=nval('sReal'), f=val('sFecha')||hoy();
   if(!qId) return decir('Escoge la cuenta','err');
@@ -717,7 +730,9 @@ A.cobrar=fiado=>{
   if(!ls.length) return decir('El carrito está vacío','err');
   const f=hoy(), clId=val('vCliente')||'cl0', qId=val('vCuenta');
   const nota=(val('vNota')||'').trim();
-  const total=ls.reduce((s,l)=>s+l.neto,0);
+  const envio=nval('vEnvio');
+  const totalProd=ls.reduce((s,l)=>s+l.neto,0);
+  const total=totalProd+envio;
   const costo=ls.reduce((s,l)=>s+l.costo,0);
   for(const l of ls){
     if(l.neto<l.costo) return decir(nomT(l.k)+' quedaría por debajo del costo ('+cop(l.cu)+' c/u)','err');
@@ -751,7 +766,7 @@ A.cobrar=fiado=>{
     });
     const costoReal=det.reduce((s,d)=>s+d.costo,0);
     if(estTotal>0&&qId) mover(qId,'EGRESO',estTotal,'Transfers venta '+nro,f);
-    nuevoDoc('facturas',{nro,f,cliente:clId,nota,tipo:tipoV,det,total,
+    nuevoDoc('facturas',{nro,f,cliente:clId,nota,envio,tipo:tipoV,det,total,
       abonado:recibido,saldo,costo:costoReal,util:total-costoReal,limite,cuentaPago:qId,
       estado:saldo<=0?'PAGADA':(recibido>0?'PARCIAL':'PENDIENTE')});
     if(recibido>0){
@@ -761,14 +776,15 @@ A.cobrar=fiado=>{
     asiento(f,'Venta '+nro,[
       {cuenta:'1105 Caja y bancos',d:recibido},
       {cuenta:'1305 Clientes',d:saldo},
-      {cuenta:'4135 Ventas',c:total},
+      {cuenta:'4135 Ventas',c:totalProd},
+      {cuenta:'4210 Envíos cobrados',c:envio},
       {cuenta:'6135 Costo de ventas',d:costoReal},
       {cuenta:'1430 Inventario estampadas',c:costoReal},
       {cuenta:'1430 Inventario estampadas',d:costoLisas+estTotal},
       {cuenta:'1435 Inventario lisas',c:costoLisas},
       {cuenta:'1105 Caja y bancos',c:estTotal}]);
     return nro;
-  },[],nro=>{tmp.carrito=[];tmp.precioMan={};tmp.packMan={};tmp.totalMan=0;tmp.cobrando=false;tmp.nota='';
+  },[],nro=>{tmp.carrito=[];tmp.precioMan={};tmp.packMan={};tmp.totalMan=0;tmp.cobrando=false;tmp.nota='';tmp.envio=0;
     return 'Factura '+nro+' por '+cop(total)+(saldo>0?' · queda debiendo '+cop(saldo):'')});
 };
 
@@ -807,7 +823,8 @@ A.anular=facId=>{
     d0.det.forEach(d=>entrada('T',d.k,d.cant,d.cu,{f,t:'ANULACION',ref:d0.nro}));
     if(d0.abonado>0) mover(d0.cuentaPago||S.cuentas[0].id,'EGRESO',d0.abonado,'Anulación '+d0.nro,f);
     asiento(f,'Anulación '+d0.nro,[
-      {cuenta:'4135 Ventas',d:d0.total},
+      {cuenta:'4135 Ventas',d:d0.total-(d0.envio||0)},
+      {cuenta:'4210 Envíos cobrados',d:d0.envio||0},
       {cuenta:'1105 Caja y bancos',c:d0.abonado},
       {cuenta:'1305 Clientes',c:d0.saldo},
       {cuenta:'1430 Inventario estampadas',d:d0.costo},
@@ -1514,6 +1531,13 @@ function vVender(){
       </div>
       <label>Nota de la venta (opcional)</label>
       <input id="vNota" placeholder="Pedido WhatsApp, entrega el viernes…" value="${esc(tmp.nota||'')}">
+      <label>Envío cobrado al cliente (opcional)</label>
+      <input id="vEnvio" inputmode="numeric" placeholder="0"
+        oninput="tmp.envio=+this.value.replace(/[^0-9]/g,'')||0;
+          document.getElementById('totCobro').textContent=
+            cop(${total}+(tmp.envio||0))">
+      <div style="font-size:12.5px;color:var(--suave);margin-top:5px">
+        Total a recibir: <b id="totCobro" style="color:var(--texto)">${cop(total+(tmp.envio||0))}</b></div>
       <label>Entra el dinero a</label>
       <select id="vCuenta">${optCuenta()}</select>
       <div class="g2">
@@ -1555,7 +1579,8 @@ function vFacturas(){
     ${fs.length?fs.slice(0,60).map(f=>`<div class="item">
       <div><div class="t">${f.nro} · ${esc(cliente(f.cliente).n)}</div>
         ${f.nota?`<div class="s" style="color:var(--texto)">${esc(f.nota)}</div>`:''}
-        <div class="s">${fecha(f.f)} · ${f.det.reduce((s,d)=>s+d.cant,0)} und ·
+        <div class="s">${fecha(f.f)} · ${f.det.reduce((s,d)=>s+d.cant,0)} und${
+          f.envio?' · envío '+cop(f.envio):''} ·
           <span class="tag ${f.estado==='PAGADA'?'verde':f.estado==='ANULADA'?'':'rojo'}">${f.estado}</span></div>
         <div style="margin-top:6px;display:flex;gap:6px">
           <button class="b g chico" onclick="A.imprimir('${f._id}')">Imprimir</button>
@@ -1614,6 +1639,21 @@ function vCaja(){
       <div class="m cifra">${cop(q.saldo)}</div></div>`).join('')}
     <div class="item" style="border-top:1px solid var(--linea)"><div class="t">Total</div>
       <div class="m cifra">${cop(S.cuentas.reduce((s,q)=>s+q.saldo,0))}</div></div>
+  </div>
+
+  <div class="card"><h3>Pasar plata entre cuentas</h3>
+    <p style="font-size:13px;color:var(--suave);margin:0 0 12px">
+      Cuando sacas de Nequi al efectivo, consignas al banco, o una venta entró
+      a la cuenta equivocada.</p>
+    <div class="g2">
+      <div><label>Sale de</label><select id="tDe">${optCuenta()}</select></div>
+      <div><label>Entra a</label><select id="tA">${optCuenta()}</select></div>
+    </div>
+    <div class="g2">
+      <div><label>Fecha</label><input type="date" id="tFecha" value="${hoy()}"></div>
+      <div><label>Cuánto</label><input id="tMonto" inputmode="numeric" placeholder="0"></div>
+    </div>
+    <button class="b" style="margin-top:12px" onclick="A.traslado()">Pasar</button>
   </div>
 
   <div class="card"><h3>Saldo inicial · ajuste</h3>
@@ -1833,6 +1873,7 @@ function pintarInv(){
   const n=$('qInv'); if(n){ n.focus(); try{n.setSelectionRange(pos,pos)}catch(_){} }
 }
 window.pintarInv=pintarInv;
+window.cop=cop;
 
 /* ═══════════ PINTAR ═════════════════════════════════════ */
 /* El vendedor no ve costos, utilidad, compras, reportes ni ajustes.
