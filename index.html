@@ -436,9 +436,21 @@ A.guardarProd=()=>{
 A.addApertura=tipo=>{
   tmp.apertura=tmp.apertura||{L:[],T:[]};
   if(tipo==='L'){
-    const c=val('aCol'),t=val('aTal'),q=nval('aCant'),cu=nval('aCosto');
-    if(!c||!t||q<=0||cu<=0) return decir('Completa color, talla, cantidad y costo','err');
-    tmp.apertura.L.push({k:kL(c,t),cant:q,cu});
+    const t=val('aTal'), cu=nval('aCosto');
+    if(!t||cu<=0) return decir('Escoge la talla y escribe el costo','err');
+    let metidas=0;
+    S.colores.forEach(c=>{
+      const q=nval('aq_'+c.id);
+      if(q>0){
+        const k=kL(c.id,t);
+        const ya=tmp.apertura.L.find(r=>r.k===k&&r.cu===cu);
+        if(ya) ya.cant+=q; else tmp.apertura.L.push({k,cant:q,cu});
+        metidas+=q;
+      }
+    });
+    if(!metidas) return decir('Escribe la cantidad en al menos un color','err');
+    S.colores.forEach(c=>{ const e=$('aq_'+c.id); if(e) e.value='' });
+    decir(num(metidas)+' lisas talla '+esc(talla(t).n)+' agregadas');
   }else{
     const d=usaDis()?val('bDis'):DGEN,l=val('bLin'),c=val('bCol'),t=val('bTal'),q=nval('bCant'),cu=nval('bCosto');
     if(usaDis()&&!d) return decir('Primero crea el diseño en Ajustes','err');
@@ -1081,15 +1093,23 @@ function vInventario(){
 
       <div style="margin-top:16px;padding-top:14px;border-top:2px solid var(--linea)">
         <b style="font-size:14px">1. Camisetas lisas sin estampar</b>
-        <div class="g3" style="margin-top:8px">
-          <select id="aCol">${optColor()}</select>
+        <div style="font-size:11.5px;color:var(--suave);margin:4px 0 8px">
+          Escoge la talla, escribe el costo y llena solo los colores que tengas.</div>
+        <div class="g2">
           <select id="aTal">${optTalla()}</select>
-          <input id="aCant" inputmode="numeric" placeholder="Cant.">
-        </div>
-        <div class="fila" style="margin-top:8px">
           <input id="aCosto" inputmode="numeric" placeholder="Lo que te costó c/u">
-          <button class="b n chico" style="flex:0 0 auto" onclick="A.addApertura('L')">Agregar</button>
         </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(92px,1fr));
+          gap:6px;margin-top:8px">
+          ${S.colores.map(c=>`<div>
+            <div style="font-size:10.5px;color:var(--suave);text-align:center;margin-bottom:2px;
+              white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+              <span class="punto" style="background:${c.hex}"></span>${esc(c.n)}</div>
+            <input id="aq_${c.id}" inputmode="numeric" placeholder="0"
+              style="text-align:center;padding:8px 4px"></div>`).join('')}
+        </div>
+        <button class="b n chico" style="margin-top:8px" onclick="A.addApertura('L')">
+          Agregar esta talla</button>
         ${ap.L.map((r,i)=>`<div class="item">
           <div><div class="t">${esc(nomL(r.k))}</div><div class="s cifra">${r.cant} × ${cop(r.cu)}</div></div>
           <div class="m"><button class="b g chico" style="min-height:30px" onclick="A.delApertura('L',${i})">✕</button></div>
