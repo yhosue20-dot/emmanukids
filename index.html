@@ -72,6 +72,16 @@ td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
   width:100%;min-height:auto}
 .prod.off{opacity:.4}
 .punto{width:11px;height:11px;border-radius:99px;border:1px solid #d4d4d8;display:inline-block;vertical-align:-1px}
+.swatch{display:block;border:1px solid var(--linea);border-radius:14px;overflow:hidden;
+  background:var(--card);transition:border-color .15s,box-shadow .15s;cursor:pointer}
+.swatch:focus-within{border-color:var(--tinta);box-shadow:0 0 0 3px var(--tinta-bg)}
+.sw-cara{display:block;height:44px;border-bottom:1px solid rgba(0,0,0,.07)}
+.sw-nom{display:block;font-size:10.5px;color:var(--suave);text-align:center;
+  padding:5px 4px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:.01em}
+.swatch input{border:0!important;background:none!important;text-align:center;
+  font-size:19px!important;font-weight:700;padding:0 2px 7px!important;min-height:auto!important;
+  font-variant-numeric:tabular-nums}
+.swatch input:focus{outline:none}
 .barra{position:fixed;left:0;right:0;bottom:calc(58px + env(safe-area-inset-bottom));background:#fff;
   border-top:1px solid var(--linea);padding:12px 14px;z-index:19;max-height:66vh;overflow-y:auto;
   box-shadow:0 -8px 24px rgba(0,0,0,.07)}
@@ -824,6 +834,34 @@ async function guardarCfg(campos){
   try{ await setDoc(rCfg,campos,{merge:true}) }
   catch(e){ decir('No se pudo guardar. Revisa la conexión.','err') }
 }
+/* --- Gama de colores del proveedor --- */
+const GAMA=[
+  ['Blanco','#F1F2F4'],      ['Marfil','#FAF7E6'],
+  ['Vainilla','#F6EDC2'],    ['Nude','#E3D3BB'],
+  ['Arena','#C8BBA7'],       ['Cocoa','#9B8E7F'],
+  ['Café','#4D3927'],        ['Lila','#A87FE7'],
+  ['Rojo','#E5241A'],        ['Palo de rosa','#F3A9AC'],
+  ['Gris medio','#7A8894'],  ['Gris oscuro','#463D37'],
+  ['Negro','#0D0D0D'],       ['Verde seco','#9BAEA1'],
+  ['Verde botella','#13533E'],['Azul bebé','#90D2F4']
+];
+A.cargarGama=()=>{
+  // Compara sin tildes, sin espacios y sin "de", para que "Cafe"="Café"
+  // y "Palo rosa"="Palo de rosa" se reconozcan como el mismo color.
+  const norm=s=>s.normalize('NFD').replace(/[̀-ͯ]/g,'')
+    .toLowerCase().replace(/\bde\b/g,'').replace(/[^a-z]/g,'');
+  let nuevos=0, pintados=0;
+  GAMA.forEach(([n,hex])=>{
+    const ya=S.colores.find(c=>norm(c.n)===norm(n));
+    if(ya){ if(ya.hex!==hex){ ya.hex=hex; pintados++ } }
+    else { S.colores.push({id:id(),n,hex}); nuevos++ }
+  });
+  if(!nuevos&&!pintados) return decir('Ya tenías toda la gama cargada');
+  guardarCfg({colores:S.colores});
+  decir((nuevos?nuevos+' colores nuevos':'')+(nuevos&&pintados?' · ':'')+
+        (pintados?pintados+' con su color real':''));
+  pintar();
+};
 A.addCat=(lista,campo)=>{
   const v=val(campo).trim(); if(!v)return;
   if(lista==='disenos') S.disenos.push({id:id(),n:v});
@@ -1103,14 +1141,12 @@ function vInventario(){
           <select id="aTal">${optTalla()}</select>
           <input id="aCosto" inputmode="numeric" placeholder="Lo que te costó c/u">
         </div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(92px,1fr));
-          gap:6px;margin-top:8px">
-          ${S.colores.map(c=>`<div>
-            <div style="font-size:10.5px;color:var(--suave);text-align:center;margin-bottom:2px;
-              white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
-              <span class="punto" style="background:${c.hex}"></span>${esc(c.n)}</div>
-            <input id="aq_${c.id}" inputmode="numeric" placeholder="0"
-              style="text-align:center;padding:8px 4px"></div>`).join('')}
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));
+          gap:8px;margin-top:10px">
+          ${S.colores.map(c=>`<label class="swatch">
+            <span class="sw-cara" style="background:${c.hex}"></span>
+            <span class="sw-nom">${esc(c.n)}</span>
+            <input id="aq_${c.id}" inputmode="numeric" placeholder="0"></label>`).join('')}
         </div>
         <button class="b n chico" style="margin-top:8px" onclick="A.addApertura('L')">
           Agregar esta talla</button>
@@ -1521,7 +1557,10 @@ function vReportes(){
 /* ── Ajustes ────────────────────────────────────────────── */
 function listaEdit(titulo,lista,campo){
   return `<div class="card"><h3>${titulo}</h3>
-    ${S[lista].map((x,i)=>`<div class="item"><div class="t">${esc(x.n)}</div>
+    ${lista==='colores'?`<button class="b g chico" style="margin-bottom:10px"
+      onclick="A.cargarGama()">Completar la gama de 16 colores</button>`:''}
+    ${S[lista].map((x,i)=>`<div class="item"><div class="t">${
+      lista==='colores'?`<span class="punto" style="background:${x.hex}"></span> `:''}${esc(x.n)}</div>
       <div class="m"><button class="b g chico" style="min-height:30px" onclick="A.delCat('${lista}',${i})">✕</button></div></div>`).join('')
       ||'<div class="vacio">Vacío</div>'}
     <div class="fila" style="margin-top:10px">
