@@ -287,7 +287,7 @@ function refrescar(){
   pend=setTimeout(()=>{
     const a=document.activeElement;
     if(a&&/INPUT|SELECT|TEXTAREA/.test(a.tagName)) return refrescar();
-    if(S) pintar();
+    if(S){ pintar(); if(typeof pintarDev==='function') pintarDev() }
   },250);
 }
 
@@ -686,6 +686,39 @@ A.nuevoCliente=()=>{
   decir(n+' agregado');
   pintar();
 };
+A.verVentas=cual=>{
+  const h=hoy(), mes=h.slice(0,7);
+  const fs=S.facturas.filter(f=>f.estado!=='ANULADA'&&
+    (cual==='hoy'?f.f===h:f.f.slice(0,7)===mes)).slice().reverse();
+  const tot=fs.reduce((s,f)=>s+f.total,0);
+  const util=fs.reduce((s,f)=>s+f.util,0);
+  const und=fs.reduce((s,f)=>s+f.det.reduce((x,d)=>x+d.cant,0),0);
+  const d=document.createElement('div');
+  d.className='modal';
+  d.onclick=e=>{if(e.target===d)d.remove()};
+  d.innerHTML=`<div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <b style="font-size:17px">Ventas ${cual==='hoy'?'de hoy':'del mes'}</b>
+      <button class="b g chico" style="flex:0 0 auto">Cerrar</button></div>
+    <div class="g2" style="margin-bottom:12px">
+      <div class="kpi"><div class="et">Vendido</div><div class="v cifra">${cop(tot)}</div>
+        <div class="d">${und} camisetas</div></div>
+      <div class="kpi"><div class="et">Utilidad</div><div class="v cifra" style="color:var(--ok)">${cop(util)}</div>
+        <div class="d">${tot>0?(util/tot*100).toFixed(0):0}% del total</div></div>
+    </div>
+    ${fs.length?fs.map(f=>`<div class="item">
+      <div><div class="t">${f.nro} · ${esc(cliente(f.cliente).n)}</div>
+        ${f.nota?`<div class="s" style="color:var(--texto)">${esc(f.nota)}</div>`:''}
+        <div class="s">${fecha(f.f)} · ${f.det.map(x=>x.cant+' '+nomT(x.k)).join(' · ')}</div>
+        ${f.envio?`<div class="s">envío ${cop(f.envio)}</div>`:''}
+        ${f.saldo>0?`<div class="s" style="color:var(--tinta)">debe ${cop(f.saldo)}</div>`:''}</div>
+      <div class="m"><span class="cifra">${cop(f.total)}</span>
+        <div class="s cifra" style="font-weight:400">util. ${cop(f.util)}</div></div>
+    </div>`).join(''):'<div class="vacio">Sin ventas en ese periodo.</div>'}
+  </div>`;
+  d.querySelector('button').onclick=()=>d.remove();
+  document.body.appendChild(d);
+};
 A.vaciar=()=>{
   if((tmp.carrito||[]).length&&!confirm('¿Vaciar el carrito?')) return;
   tmp.carrito=[];tmp.precioMan={};tmp.packMan={};tmp.totalMan=0;tmp.cobrando=false;pintar();
@@ -812,6 +845,104 @@ A.abonar=facId=>{
 };
 
 /* --- Anular factura --- */
+/* --- Devolución / cambio: vuelven camisetas de una factura ya hecha --- */
+A.abrirDevol=facId=>{
+  const fac=S.facturas.find(x=>x._id===facId); if(!fac)return;
+  tmp.dev={}; tmp.devFac=facId; pintar();
+  const d=document.createElement('div');
+  d.className='modal'; d.id='mDev';
+  d.onclick=e=>{if(e.target===d)cerrarDev()};
+  d.innerHTML='<div id="cDev"></div>';
+  document.body.appendChild(d);
+  pintarDev();
+};
+function cerrarDev(){ const m=$('mDev'); if(m)m.remove(); tmp.dev={}; tmp.devFac=null }
+window.cerrarDev=cerrarDev;
+function pintarDev(){
+  const c=$('cDev'); if(!c)return;
+  const fac=S.facturas.find(x=>x._id===tmp.devFac); if(!fac)return;
+  const dev=tmp.dev||{};
+  const yaDev=fac.devuelto||{};
+  const valor=fac.det.reduce((s,x,i)=>s+(dev[i]||0)*x.precio,0);
+  c.innerHTML=`
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+      <b style="font-size:17px">Devolución · ${fac.nro}</b>
+      <button class="b g chico" style="flex:0 0 auto" onclick="cerrarDev()">Cerrar</button></div>
+    <p style="font-size:13px;color:var(--suave);margin:0 0 12px">
+      Marca cuántas te devolvió de cada una. Vuelven al inventario y se descuenta de la venta.</p>
+    ${fac.det.map((x,i)=>{
+      const tope=x.cant-(yaDev[i]||0);
+      if(tope<=0) return `<div class="item" style="opacity:.45">
+        <div><div class="t">${esc(nomT(x.k))}</div>
+          <div class="s">ya devuelta</div></div></div>`;
+      return `<div class="item">
+        <div><div class="t">${esc(nomT(x.k))}</div>
+          <div class="s">llevó ${tope} · ${cop(x.precio)} c/u</div></div>
+        <div style="display:flex;align-items:center;gap:6px">
+          <button class="b g chico" style="min-height:34px;padding:0 11px"
+            onclick="A.devCant(${i},-1)">−</button>
+          <b class="cifra" style="min-width:20px;text-align:center">${dev[i]||0}</b>
+          <button class="b g chico" style="min-height:34px;padding:0 11px"
+            onclick="A.devCant(${i},1,${tope})">+</button>
+        </div></div>`}).join('')}
+    <div class="item" style="border-top:1px solid var(--linea)">
+      <div class="t">A devolver</div>
+      <div class="m cifra" style="font-size:20px">${cop(valor)}</div></div>
+    ${valor>0?`
+      ${fac.saldo>0?`<div class="aviso ok">Se baja primero de lo que te debe (${cop(fac.saldo)}).</div>`:''}
+      <label>Si hay que devolver plata, sale de</label>
+      <select id="dCuenta">${optCuenta()}</select>
+      <button class="b" style="margin-top:12px" onclick="A.guardarDevol()">Registrar devolución</button>
+      <div style="font-size:12px;color:var(--suave);margin-top:8px;text-align:center">
+        ¿Cambió por otra? Registra la devolución y véndele la nueva normal.</div>
+    `:'<div class="vacio">Marca al menos una camiseta.</div>'}`;
+}
+A.devCant=(i,d,tope)=>{
+  tmp.dev=tmp.dev||{};
+  const v=(tmp.dev[i]||0)+d;
+  if(d>0&&v>tope) return;
+  tmp.dev[i]=Math.max(0,v);
+  pintarDev();
+};
+A.guardarDevol=()=>{
+  const facId=tmp.devFac, dev={...(tmp.dev||{})};
+  const fac=S.facturas.find(x=>x._id===facId); if(!fac)return;
+  const qId=val('dCuenta');
+  const items=Object.entries(dev).filter(([,q])=>q>0);
+  if(!items.length) return decir('Marca al menos una camiseta','err');
+  const f=hoy(), ref=doc(db,'facturas',facId);
+  correr(ex=>{
+    const d0=ex[0].data();
+    if(d0.estado==='ANULADA') throw new Error('Esa factura está anulada');
+    const yaDev=d0.devuelto||{};
+    let valor=0, costoDev=0;
+    const nuevoDev={...yaDev};
+    items.forEach(([i,q])=>{
+      const x=d0.det[i];
+      if(!x) throw new Error('La factura cambió, vuelve a abrirla');
+      if((yaDev[i]||0)+q>x.cant) throw new Error('No puedes devolver más de lo que llevó');
+      entrada('T',x.k,q,x.cu,{f,t:'DEVOLUCION',ref:d0.nro});
+      valor+=q*x.precio; costoDev+=q*x.cu;
+      nuevoDev[i]=(yaDev[i]||0)+q;
+    });
+    // Primero se baja la deuda; lo que sobre sale de la cuenta
+    const bajaSaldo=Math.min(valor,d0.saldo||0);
+    const plata=valor-bajaSaldo;
+    if(plata>0) mover(qId,'EGRESO',plata,'Devolución '+d0.nro,f);
+    const total=d0.total-valor, abonado=(d0.abonado||0)-plata, saldo=(d0.saldo||0)-bajaSaldo;
+    const costo=(d0.costo||0)-costoDev;
+    asiento(f,'Devolución '+d0.nro,[
+      {cuenta:'4175 Devoluciones en ventas',d:valor},
+      {cuenta:'1105 Caja y bancos',c:plata},
+      {cuenta:'1305 Clientes',c:bajaSaldo},
+      {cuenta:'1430 Inventario estampadas',d:costoDev},
+      {cuenta:'6135 Costo de ventas',c:costoDev}]);
+    PEND.updates.push({ref,data:{devuelto:nuevoDev,total,abonado,saldo,costo,
+      util:total-costo,estado:total<=0?'ANULADA':(saldo<=0?'PAGADA':(abonado>0?'PARCIAL':'PENDIENTE'))}});
+    return {v:valor,p:plata};
+  },[ref],r=>{cerrarDev();
+    return 'Devolución de '+cop(r.v)+(r.p>0?' · salieron '+cop(r.p)+' de la cuenta':' · bajó la deuda')});
+};
 A.anular=facId=>{
   const fac=S.facturas.find(x=>x._id===facId); if(!fac)return;
   if(fac.estado==='ANULADA') return;
@@ -1060,10 +1191,12 @@ function vInicio(){
 
   return `
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
-    <div class="kpi"><div class="et">🏷 Ventas de hoy</div><div class="v cifra" style="color:var(--tinta)">${cop(sum(vh,'total'))}</div>
-      <div class="d">${vh.length} factura${vh.length===1?'':'s'}</div></div>
-    <div class="kpi"><div class="et">📈 Ventas del mes</div><div class="v cifra" style="color:var(--cielo)">${cop(sum(vm,'total'))}</div>
-      <div class="d">${vm.length} facturas</div></div>
+    <div class="kpi" onclick="A.verVentas('hoy')" style="cursor:pointer">
+      <div class="et">🏷 Ventas de hoy</div><div class="v cifra" style="color:var(--tinta)">${cop(sum(vh,'total'))}</div>
+      <div class="d">${vh.length} factura${vh.length===1?'':'s'} · ver ▸</div></div>
+    <div class="kpi" onclick="A.verVentas('mes')" style="cursor:pointer">
+      <div class="et">📈 Ventas del mes</div><div class="v cifra" style="color:var(--cielo)">${cop(sum(vm,'total'))}</div>
+      <div class="d">${vm.length} facturas · ver ▸</div></div>
     <div class="kpi"><div class="et">💰 Utilidad del mes</div><div class="v cifra" style="color:${utilMes>=0?'var(--ok)':'var(--tinta)'}">${cop(utilMes)}</div>
       <div class="d">después de ${cop(gm)} en gastos</div></div>
     <div class="kpi"><div class="et">⏳ Por cobrar</div><div class="v cifra" style="color:var(--sol)">${cop(sum(cartera,'saldo'))}</div>
@@ -1465,6 +1598,11 @@ function vVender(){
   </div>`:`<button class="b g" style="margin-bottom:12px" onclick="tmp.xm=true;pintar()">
     ✂ Estampar al momento</button>`}
 
+  <div style="display:flex;justify-content:flex-end;margin-bottom:6px">
+    <button onclick="tmp.parrilla=(tmp.parrilla===false);pintar()"
+      style="border:0;background:none;color:var(--suave);font-size:12px;cursor:pointer">
+      ${tmp.parrilla===false?'▦ Ver como parrilla':'▤ Ver como tarjetas'}</button>
+  </div>
   <div id="listaProd" style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
     ${lista.length?lista.map(([k,v])=>{
       const [,lin,c,t]=k.split('|'), [d]=k.split('|');
@@ -1553,10 +1691,52 @@ function vVender(){
     `:`<button class="b" onclick="tmp.cobrando=true;pintar()">Cobrar ${cop(total)}</button>`}
   </div>`:''}`;
 }
+/* Parrilla rápida: un grupo (diseño+línea) a la vez, colores en filas y
+   tallas en columnas. Un toque suma una al carrito.                     */
+function parrilla(){
+  const tv=tmp.tipoVenta||'DETAL';
+  const hay=Object.entries(S.terminados).filter(([k,v])=>v.cant>0);
+  if(!hay.length) return '<div class="vacio">No hay camisetas estampadas.</div>';
+
+  const grupos={};
+  hay.forEach(([k])=>{const p=k.split('|');
+    grupos[p[0]+'|'+p[1]]=(grupos[p[0]+'|'+p[1]]||0)+invT(k).cant});
+  const claves=Object.keys(grupos);
+  let g=tmp.grupo&&grupos[tmp.grupo]?tmp.grupo:claves[0];
+  const [gd,gl]=g.split('|');
+  const nombre=x=>{const [d,l]=x.split('|');
+    return (usaDis(l)?diseno(d).n+' · ':'')+linea(l).n};
+
+  const enCarrito=k=>((tmp.carrito||[]).find(c=>c.id===k)||{}).cant||0;
+  const cols=S.colores.filter(c=>S.tallas.some(t=>invT(kT(gd,gl,c.id,t.id)).cant>0));
+  const tals=S.tallas.filter(t=>S.colores.some(c=>invT(kT(gd,gl,c.id,t.id)).cant>0));
+
+  return `
+  <div style="display:flex;gap:6px;overflow-x:auto;padding-bottom:8px;margin-bottom:4px">
+    ${claves.map(x=>`<button onclick="tmp.grupo='${x}';pintar()"
+      style="flex:0 0 auto;border:1px solid ${x===g?'var(--tinta)':'var(--linea)'};
+      background:${x===g?'var(--tinta)':'#fff'};color:${x===g?'#fff':'var(--texto)'};
+      border-radius:999px;padding:7px 13px;font-size:12.5px;font-weight:700;cursor:pointer">
+      ${esc(nombre(x))} <span style="opacity:.65">${grupos[x]}</span></button>`).join('')}
+  </div>
+  <div style="font-size:12px;color:var(--suave);margin-bottom:6px">
+    Toca una casilla para sumar una · ${cop(precioPor(gl,1,tv))} c/u</div>
+  <div class="scroll"><table class="malla">
+    <tr><th>Color</th>${tals.map(t=>`<th class="n">${esc(t.n)}</th>`).join('')}</tr>
+    ${cols.map(c=>`<tr>
+      <td style="white-space:nowrap"><span class="punto" style="background:${c.hex}"></span> ${esc(c.n)}</td>
+      ${tals.map(t=>{const k=kT(gd,gl,c.id,t.id), v=invT(k).cant, y=enCarrito(k);
+        if(!v) return '<td class="n"><span style="color:#e4e4e7">·</span></td>';
+        return `<td class="n"><button class="celda" onclick="A.agregar('${k}')"
+          style="${y?'background:var(--tinta);color:#fff':''}">${y?y+'/'+v:v}</button></td>`}).join('')}
+    </tr>`).join('')}
+  </table></div>`;
+}
 function pintarLista(){
   const q=(tmp.busq||'').toLowerCase();
   const cont=$('listaProd'); if(!cont)return;
   const tv=tmp.tipoVenta||'DETAL';
+  if(!q&&tmp.parrilla!==false){ cont.innerHTML=`<div style="grid-column:1/-1">${parrilla()}</div>`; return }
   const lista=Object.entries(S.terminados).filter(([k,v])=>v.cant>0)
     .filter(([k])=>!q||nomT(k).toLowerCase().includes(q));
   cont.innerHTML=lista.length?lista.map(([k,v])=>{
@@ -1580,11 +1760,13 @@ function vFacturas(){
       <div><div class="t">${f.nro} · ${esc(cliente(f.cliente).n)}</div>
         ${f.nota?`<div class="s" style="color:var(--texto)">${esc(f.nota)}</div>`:''}
         <div class="s">${fecha(f.f)} · ${f.det.reduce((s,d)=>s+d.cant,0)} und${
+          f.devuelto&&Object.values(f.devuelto).some(x=>x>0)?' · <span class="tag rojo">con devolución</span>':''}${
           f.envio?' · envío '+cop(f.envio):''} ·
           <span class="tag ${f.estado==='PAGADA'?'verde':f.estado==='ANULADA'?'':'rojo'}">${f.estado}</span></div>
         <div style="margin-top:6px;display:flex;gap:6px">
           <button class="b g chico" onclick="A.imprimir('${f._id}')">Imprimir</button>
-          ${f.estado!=='ANULADA'?`<button class="b g chico" onclick="A.anular('${f._id}')">Anular</button>`:''}
+          ${f.estado!=='ANULADA'?`<button class="b g chico" onclick="A.abrirDevol('${f._id}')">Devolver</button>
+          <button class="b g chico" onclick="A.anular('${f._id}')">Anular</button>`:''}
         </div></div>
       <div class="m"><span class="cifra">${cop(f.total)}</span>
         ${f.saldo>0?`<div class="s cifra">debe ${cop(f.saldo)}</div>`:''}
