@@ -537,14 +537,17 @@ function lineasCarrito(){
       const l=c.k.split('|')[1]; grupos[l]=(grupos[l]||0)+c.cant });
     Object.entries(grupos).forEach(([l,n])=>{
       const L=linea(l), P=L.pack||{und:3,precio:L.precio*3};
+      // Precio del pack que el usuario escribió para ESTA venta; si no, el de la lista
+      const pp=(tmp.packMan||{})[l]!=null?tmp.packMan[l]:P.precio;
       const packs=Math.floor(n/P.und), resto=n%P.und;
-      const total=packs*P.precio+resto*L.precio;
-      pack[l]={unit:n>0?total/n:L.precio,packs,resto,und:P.und,precioPack:P.precio,linea:L.n};
+      const total=packs*pp+resto*L.precio;
+      pack[l]={unit:n>0?total/n:L.precio,packs,resto,und:P.und,precioPack:pp,
+               dePista:pp!==P.precio,linea:L.n};
     });
   }
   tmp._pack=pack;
 
-  return carro.map(c=>{
+  const base=carro.map(c=>{
     const l=c.k.split('|')[1];
     let p, origen;
     if(man[c.id]!=null){ p=man[c.id]; origen='manual' }
@@ -553,8 +556,49 @@ function lineasCarrito(){
     const neto=p*c.cant, cu=c.xm?costoL(c.kl)+(linea(l).estampado||0):costoT(c.k);
     return {...c,precio:p,origen,neto,cu,costo:cu*c.cant,util:neto-cu*c.cant};
   });
+
+  /* Precio de combo: escribes el total de la venta y la app lo reparte entre
+     las camisetas según lo que vale cada una en la lista. Sirve para packs
+     mezclados (1 económica + 2 premium) o para 4, 5, 6 al mismo precio.   */
+  if(tmp.totalMan>0&&base.length){
+    const peso=base.map(l=>linea(l.k.split('|')[1]).precio*l.cant);
+    const suma=peso.reduce((s,x)=>s+x,0)||1;
+    let repartido=0;
+    base.forEach((l,i)=>{
+      const neto=i===base.length-1?tmp.totalMan-repartido
+        :Math.round(tmp.totalMan*peso[i]/suma);
+      repartido+=neto;
+      l.neto=neto; l.precio=neto/l.cant; l.origen='combo'; l.util=neto-l.costo;
+    });
+  }
+  return base;
 }
 A.tipoVenta=t=>{tmp.tipoVenta=t;pintar()};
+A.totalCombo=()=>{
+  const ls=lineasCarrito();
+  const unid=ls.reduce((s,l)=>s+l.cant,0);
+  if(!unid) return decir('Primero agrega las camisetas','err');
+  const actual=ls.reduce((s,l)=>s+l.neto,0);
+  const v=prompt('¿En cuánto vendes estas '+unid+' camisetas EN TOTAL?\n\n'+
+    'La app reparte ese valor entre ellas.\nDeja vacío para volver a los precios de la lista:',
+    Math.round(tmp.totalMan||actual));
+  if(v===null) return;
+  const n=+String(v).replace(/[^\d]/g,'');
+  tmp.totalMan=n>0?n:0;
+  pintar();
+};
+A.precioPack=lid=>{
+  const L=linea(lid), P=L.pack||{und:3,precio:L.precio*3};
+  const actual=(tmp._pack||{})[lid];
+  const v=prompt('¿En cuánto vendes el pack de '+P.und+'?\n'+L.n+
+    '\n\nDeja vacío para volver al precio de la lista ('+cop(P.precio)+'):',
+    Math.round(actual?actual.precioPack:P.precio));
+  if(v===null) return;
+  tmp.packMan=tmp.packMan||{};
+  const n=+String(v).replace(/[^\d]/g,'');
+  if(!n) delete tmp.packMan[lid]; else tmp.packMan[lid]=n;
+  pintar();
+};
 A.precio=id=>{
   const actual=lineasCarrito().find(l=>l.id===id);
   const v=prompt('Precio por unidad\n'+nomT(actual?actual.k:id)+'\n\nDeja vacío para volver al precio de la lista:',
@@ -620,7 +664,7 @@ A.cobrar=fiado=>{
       {cuenta:'1435 Inventario lisas',c:costoLisas},
       {cuenta:'1105 Caja y bancos',c:estTotal}]);
     return nro;
-  },[],nro=>{tmp.carrito=[];tmp.precioMan={};tmp.cobrando=false;
+  },[],nro=>{tmp.carrito=[];tmp.precioMan={};tmp.packMan={};tmp.totalMan=0;tmp.cobrando=false;
     return 'Factura '+nro+' por '+cop(total)+(saldo>0?' · queda debiendo '+cop(saldo):'')});
 };
 
@@ -1202,14 +1246,25 @@ function vVender(){
     </div>`).join('')}
 
     ${tv==='PACK'&&Object.keys(tmp._pack||{}).length?`<div style="background:#fafafa;border-radius:12px;
-      padding:8px 10px;font-size:12.5px;color:var(--suave);margin-top:6px">
-      ${Object.values(tmp._pack).map(p=>
-        `${esc(p.linea)}: <b>${p.packs} pack${p.packs===1?'':'s'} de ${p.und}</b> a ${cop(p.precioPack)}${
-        p.resto?` + ${p.resto} suelta${p.resto===1?'':'s'}`:''}`).join('<br>')}
+      padding:10px;font-size:12.5px;color:var(--suave);margin-top:6px">
+      ${Object.entries(tmp._pack).map(([lid,p])=>
+        `<div style="padding:4px 0">
+          <b>${esc(p.linea)}</b> · ${p.packs} pack${p.packs===1?'':'s'} de ${p.und}${
+          p.resto?` + ${p.resto} suelta${p.resto===1?'':'s'}`:''}<br>
+          <button onclick="A.precioPack('${lid}')" style="border:0;background:none;padding:2px 0;
+            color:${p.dePista?'var(--tinta)':'var(--suave)'};font-size:12.5px;cursor:pointer">
+            Pack a <b>${cop(p.precioPack)}</b> ✎</button>
+          · sale a <b>${cop(p.precioPack/p.und)}</b> cada camiseta
+        </div>`).join('')}
     </div>`:''}
 
     <div class="item" style="border-top:1px solid var(--linea);border-bottom:0">
-      <div class="t">${unid} unidades</div>
+      <div><div class="t">${unid} unidades</div>
+        <button onclick="A.totalCombo()" style="border:0;background:none;padding:2px 0;
+          color:${tmp.totalMan>0?'var(--tinta)':'var(--suave)'};font-size:12.5px;cursor:pointer">
+          ${tmp.totalMan>0?'Precio de combo fijado ✎':'Poner precio al combo ✎'}</button>
+        ${tmp.totalMan>0&&unid?`<div style="font-size:12px;color:var(--suave)">
+          sale a ${cop(total/unid)} cada camiseta</div>`:''}</div>
       <div class="m cifra" style="font-size:22px">${cop(total)}</div>
     </div>
 
