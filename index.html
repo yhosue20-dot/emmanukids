@@ -82,6 +82,13 @@ td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
   font-size:19px!important;font-weight:700;padding:0 2px 7px!important;min-height:auto!important;
   font-variant-numeric:tabular-nums}
 .swatch input:focus{outline:none}
+table.malla{font-size:13.5px}
+table.malla th{font-size:10.5px;letter-spacing:.04em;text-transform:uppercase;color:var(--suave)}
+table.malla td,table.malla th{padding:6px 8px;white-space:nowrap}
+table.malla tr.pie td{border-top:2px solid var(--linea);font-weight:700;color:var(--texto)}
+.celda{border:0;background:none;font:inherit;font-weight:700;color:var(--texto);
+  padding:3px 7px;border-radius:7px;cursor:pointer;font-variant-numeric:tabular-nums}
+.celda:hover{background:var(--tinta-bg);color:var(--tinta)}
 .barra{position:fixed;left:0;right:0;bottom:calc(58px + env(safe-area-inset-bottom));background:#fff;
   border-top:1px solid var(--linea);padding:12px 14px;z-index:19;max-height:66vh;overflow-y:auto;
   box-shadow:0 -8px 24px rgba(0,0,0,.07)}
@@ -190,10 +197,11 @@ function nuevo(){
     lisas:{}, terminados:{},
     compras:[], ordenes:[], facturas:[], pagos:[], gastos:[],
     kardex:[], caja:[], asientos:[],
-    consecutivo:0, stockMin:5, usaDisenos:false
+    consecutivo:0, stockMin:5
   };
 }
-const usaDis=()=>!!S.usaDisenos;
+/* Cada línea decide si controla diseños. Sin argumento = alguna los usa. */
+const usaDis=lid=>lid?!!(linea(lid)||{}).usaDis:S.lineas.some(L=>L.usaDis);
 const DGEN='gen';
 
 /* ── Conexión con Firestore ─────────────────────────────── */
@@ -206,7 +214,7 @@ const DGEN='gen';
    así dos personas vendiendo al tiempo nunca dejan el stock en negativo.       */
 
 const CONFIG=['empresa','colores','tallas','disenos','lineas','clientes','proveedores',
-  'catGastos','stockMin','usaDisenos','consecutivo'];
+  'catGastos','stockMin','consecutivo'];
 
 async function sembrar(){
   const base=nuevo();
@@ -291,7 +299,7 @@ const kL=(c,t)=>c+'|'+t;
 const kT=(d,l,c,t)=>[d,l,c,t].join('|');
 const nomL=k=>{const[c,t]=k.split('|');return color(c).n+' · T'+talla(t).n};
 const nomT=k=>{const[d,l,c,t]=k.split('|');
-  return (usaDis()?diseno(d).n+' · ':'')+linea(l).n+' · '+color(c).n+' · T'+talla(t).n};
+  return (usaDis(l)?diseno(d).n+' · ':'')+linea(l).n+' · '+color(c).n+' · T'+talla(t).n};
 
 const invL=k=>S.lisas[k]||{cant:0,valor:0};
 const invT=k=>S.terminados[k]||{cant:0,valor:0};
@@ -411,8 +419,8 @@ A.delProdFila=i=>{tmp.prod.splice(i,1);pintar()};
 A.guardarProd=()=>{
   const filas=tmp.prod||[];
   if(!filas.length) return decir('Agrega qué camisetas vas a estampar','err');
-  const dId=usaDis()?val('pDis'):DGEN, lId=val('pLin');
-  if(usaDis()&&!dId) return decir('Elige el diseño. Créalo en Ajustes si no está','err');
+  const lId=val('pLin'), dId=usaDis(lId)?val('pDis'):DGEN;
+  if(usaDis(lId)&&!dId) return decir('Elige el diseño. Créalo en Ajustes si no está','err');
   const f=val('pFecha')||hoy(), est=nval('pEst'), mo=nval('pMO'), qId=val('pCuenta');
   const procesadas=filas.reduce((s,r)=>s+r.cant,0);
   const buenas=filas.reduce((s,r)=>s+(r.cant-r.merma),0);
@@ -462,8 +470,8 @@ A.addApertura=tipo=>{
     S.colores.forEach(c=>{ const e=$('aq_'+c.id); if(e) e.value='' });
     decir(num(metidas)+' lisas talla '+esc(talla(t).n)+' agregadas');
   }else{
-    const d=usaDis()?val('bDis'):DGEN,l=val('bLin'),c=val('bCol'),t=val('bTal'),q=nval('bCant'),cu=nval('bCosto');
-    if(usaDis()&&!d) return decir('Primero crea el diseño en Ajustes','err');
+    const l=val('bLin'),d=usaDis(l)?val('bDis'):DGEN,c=val('bCol'),t=val('bTal'),q=nval('bCant'),cu=nval('bCosto');
+    if(usaDis(l)&&!d) return decir('Primero crea el diseño en Ajustes','err');
     if(q<=0||cu<=0) return decir('Completa cantidad y costo','err');
     tmp.apertura.T.push({k:kT(d,l,c,t),cant:q,cu});
   }
@@ -524,8 +532,8 @@ A.agregar=k=>{
 };
 /* Estampar al momento: sale de lisas, se estampa y se vende en la misma venta */
 A.agregarXM=()=>{
-  const d=usaDis()?val('xDis'):DGEN, l=val('xLin'), c=val('xCol'), t=val('xTal'), q=nval('xCant')||1;
-  if(usaDis()&&!d) return decir('Primero crea el diseño en Ajustes','err');
+  const l=val('xLin'), d=usaDis(l)?val('xDis'):DGEN, c=val('xCol'), t=val('xTal'), q=nval('xCant')||1;
+  if(usaDis(l)&&!d) return decir('Primero crea el diseño en Ajustes','err');
   if(!l||!c||!t) return decir('Escoge línea, color y talla','err');
   const kl=kL(c,t), hay=invL(kl).cant;
   if(hay<=0) return decir('No hay lisas '+nomL(kl)+' en bodega','err');
@@ -881,6 +889,7 @@ A.guardarPrecios=()=>{
   S.lineas.forEach((L,i)=>{
     L.n=val('ln'+i).trim()||L.n;
     L.precio=nval('lp'+i); L.estampado=nval('le'+i); L.margenMin=nval('lm'+i);
+    L.usaDis=!!($('ld'+i)||{}).checked;
     L.rangos=[
       {min:1,max:5,p:nval('r'+i+'a')},
       {min:6,max:20,p:nval('r'+i+'b')},
@@ -888,9 +897,8 @@ A.guardarPrecios=()=>{
     L.pack={und:nval('pu'+i)||3,precio:nval('pp'+i)||L.precio*3};
   });
   S.stockMin=nval('stockMin')||5;
-  S.usaDisenos=$('usaDis').checked;
   S.empresa={nombre:val('eNom')||'EMMANUKIDS',tel:val('eTel'),nit:val('eNit')};
-  guardarCfg({lineas:S.lineas,stockMin:S.stockMin,usaDisenos:S.usaDisenos,empresa:S.empresa});
+  guardarCfg({lineas:S.lineas,stockMin:S.stockMin,empresa:S.empresa});
   decir('Precios y ajustes guardados. Los demás los ven al instante.');
 };
 
@@ -1057,13 +1065,13 @@ function vTaller(){
 
   return `
   <div class="card"><h3>Registrar estampado</h3>
-    ${usaDis()&&!S.disenos.length?'<div class="aviso err">Primero crea al menos un diseño en Ajustes.</div>':''}
+    ${usaDis(tmp.lin||S.lineas[0].id)&&!S.disenos.length?'<div class="aviso err">Primero crea al menos un diseño en Ajustes.</div>':''}
     <div class="g2">
       <div><label>Fecha</label><input type="date" id="pFecha" value="${hoy()}"></div>
       <div><label>Tipo de estampado</label><select id="pLin" onchange="tmp.lin=this.value;pintar()">
         ${S.lineas.map(l=>`<option value="${l.id}"${tmp.lin===l.id?' selected':''}>${esc(l.n)}</option>`).join('')}</select></div>
     </div>
-    ${usaDis()?`<label>Diseño</label>
+    ${usaDis(tmp.lin||S.lineas[0].id)?`<label>Diseño</label>
     <select id="pDis">${S.disenos.map(d=>`<option value="${d.id}">${esc(d.n)}</option>`).join('')}</select>`:''}
 
     <label>¿Qué camisetas lisas vas a usar?</label>
@@ -1098,7 +1106,7 @@ function vTaller(){
 
   <div class="card"><h3>Producciones anteriores</h3>
     ${S.ordenes.slice().reverse().slice(0,15).map(o=>`<div class="item">
-      <div><div class="t">${usaDis()?esc(diseno(o.diseno).n)+' · ':''}${esc(linea(o.linea).n)}${
+      <div><div class="t">${usaDis(o.linea)?esc(diseno(o.diseno).n)+' · ':''}${esc(linea(o.linea).n)}${
         o.estado==='ANULADA'?' <span class="tag rojo">ANULADA</span>':''}</div>
         <div class="s">${o.ref||''} · ${fecha(o.f)} · ${o.buenas} buenas${o.merma?', '+o.merma+' dañadas':''}</div>
         ${o.estado!=='ANULADA'&&admin()?`<div style="margin-top:6px">
@@ -1158,10 +1166,11 @@ function vInventario(){
 
       <div style="margin-top:16px;padding-top:14px;border-top:2px solid var(--linea)">
         <b style="font-size:14px">2. Camisetas ya estampadas</b>
-        ${usaDis()&&!S.disenos.length?'<div class="aviso err" style="margin-top:8px">Crea primero los diseños en Ajustes.</div>':''}
-        <div class="${usaDis()?'g2':''}" style="margin-top:8px">
-          ${usaDis()?`<select id="bDis">${S.disenos.map(d=>`<option value="${d.id}">${esc(d.n)}</option>`).join('')}</select>`:''}
-          <select id="bLin">${S.lineas.map(x=>`<option value="${x.id}">${esc(x.n)}</option>`).join('')}</select>
+        ${usaDis(tmp.bLin||S.lineas[0].id)&&!S.disenos.length?'<div class="aviso err" style="margin-top:8px">Crea primero los diseños en Ajustes.</div>':''}
+        <div class="${usaDis(tmp.bLin||S.lineas[0].id)?'g2':''}" style="margin-top:8px">
+          <select id="bLin" onchange="tmp.bLin=this.value;pintar()">${S.lineas.map(x=>
+            `<option value="${x.id}"${(tmp.bLin||S.lineas[0].id)===x.id?' selected':''}>${esc(x.n)}</option>`).join('')}</select>
+          ${usaDis(tmp.bLin||S.lineas[0].id)?`<select id="bDis">${S.disenos.map(d=>`<option value="${d.id}">${esc(d.n)}</option>`).join('')}</select>`:''}
         </div>
         <div class="g3" style="margin-top:8px">
           <select id="bCol">${optColor()}</select>
@@ -1191,25 +1200,64 @@ function vInventario(){
   </div>
 
   <div class="card"><h3>Camisetas estampadas · listas para vender</h3>
-    ${t.length?t.map(([k,v])=>{
-      const [,lin,c]=k.split('|');
-      return `<div class="item">
-        <div><div class="t"><span class="punto" style="background:${color(c).hex}"></span> ${esc(nomT(k))}</div>
-          <div class="s">Costo ${cop(v.valor/v.cant)} · vende a ${cop(linea(lin).precio)}</div></div>
-        <div class="m"><span class="cifra ${bajo(k)?'':''}">${v.cant}</span>
-          ${bajo(k)?'<div><span class="tag rojo">bajo</span></div>':''}</div>
-        ${admin()?`<button class="b g chico" style="min-height:30px;padding:0 9px;margin-left:8px"
-          onclick="A.ajustarInv('T','${k}')" title="Corregir cantidad">✎</button>`:''}</div>`}).join('')
+    ${t.length?(()=>{
+      const g={};
+      t.forEach(([k,v])=>{
+        const p=k.split('|'), gk=(usaDis(p[1])?p[0]+'|':'')+p[1];
+        (g[gk]=g[gk]||[]).push([k,v]);
+      });
+      return Object.entries(g).map(([gk,filas])=>{
+        const p=gk.split('|'), lin=p.length>1?p[1]:p[0];
+        const tit=(p.length>1?diseno(p[0]).n+' · ':'')+linea(lin).n;
+        const tot=filas.reduce((s,[,v])=>s+v.cant,0);
+        return `<div style="margin-bottom:14px">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;
+            padding:0 0 6px;border-bottom:1px solid var(--linea)">
+            <b style="font-size:13.5px">${esc(tit)}</b>
+            <span style="font-size:12px;color:var(--suave)">${tot} und ·
+              vende a ${cop(linea(lin).precio)}</span></div>
+          ${filas.sort((a,b)=>nomT(a[0]).localeCompare(nomT(b[0]))).map(([k,v])=>{
+            const c=k.split('|')[2], ta=k.split('|')[3];
+            return `<div class="item" style="padding:7px 0">
+              <div><div class="t" style="font-size:14px">
+                <span class="punto" style="background:${color(c).hex}"></span>
+                ${esc(color(c).n)} · T${esc(talla(ta).n)}</div>
+                <div class="s">costo ${cop(v.valor/v.cant)}</div></div>
+              <div class="m"><span class="cifra">${v.cant}</span>
+                ${bajo(k)?'<div><span class="tag rojo">bajo</span></div>':''}</div>
+              ${admin()?`<button class="b g chico" style="min-height:30px;padding:0 9px;margin-left:8px"
+                onclick="A.ajustarInv('T','${k}')" title="Corregir cantidad">✎</button>`:''}</div>`}).join('')}
+        </div>`}).join('');
+    })()
       :'<div class="vacio">No hay camisetas estampadas. Registra una producción en Taller.</div>'}
   </div>
 
   <div class="card"><h3>Camisetas lisas · en bodega</h3>
-    ${l.length?l.map(([k,v])=>`<div class="item">
-      <div><div class="t"><span class="punto" style="background:${color(k.split('|')[0]).hex}"></span> ${esc(nomL(k))}</div>
-        <div class="s">Costo promedio ${cop(v.valor/v.cant)}</div></div>
-      <div class="m cifra">${v.cant}</div>
-      ${admin()?`<button class="b g chico" style="min-height:30px;padding:0 9px;margin-left:8px"
-        onclick="A.ajustarInv('L','${k}')" title="Corregir cantidad">✎</button>`:''}</div>`).join('')
+    ${l.length?(()=>{
+      // Tabla: una fila por color, una columna por talla. Solo salen los
+      // colores y las tallas que de verdad tienen camisetas.
+      const cols=S.colores.filter(c=>S.tallas.some(t=>invL(kL(c.id,t.id)).cant>0));
+      const tals=S.tallas.filter(t=>S.colores.some(c=>invL(kL(c.id,t.id)).cant>0));
+      const totT=t=>S.colores.reduce((s,c)=>s+invL(kL(c.id,t.id)).cant,0);
+      const totC=c=>S.tallas.reduce((s,t)=>s+invL(kL(c.id,t.id)).cant,0);
+      return `<div class="scroll"><table class="malla">
+        <tr><th>Color</th>${tals.map(t=>`<th class="n">${esc(t.n)}</th>`).join('')}
+          <th class="n">Total</th></tr>
+        ${cols.map(c=>`<tr>
+          <td style="white-space:nowrap"><span class="punto" style="background:${c.hex}"></span> ${esc(c.n)}</td>
+          ${tals.map(t=>{const k=kL(c.id,t.id), q=invL(k).cant;
+            return `<td class="n">${q>0?(admin()
+              ?`<button class="celda" onclick="A.ajustarInv('L','${k}')">${q}</button>`
+              :`<b>${q}</b>`):'<span style="color:#d4d4d8">·</span>'}</td>`}).join('')}
+          <td class="n"><b>${totC(c.id)}</b></td></tr>`).join('')}
+        <tr class="pie"><td>Total</td>
+          ${tals.map(t=>`<td class="n">${totT(t.id)}</td>`).join('')}
+          <td class="n">${Object.values(S.lisas).reduce((s,v)=>s+v.cant,0)}</td></tr>
+      </table></div>
+      <div style="font-size:11.5px;color:var(--suave);margin-top:8px">
+        ${admin()?'Toca una cantidad para corregirla. ':''}Valor en bodega:
+        <b>${cop(Object.values(S.lisas).reduce((s,v)=>s+v.valor,0))}</b></div>`;
+    })()
       :'<div class="vacio">No hay lisas. Registra una compra.</div>'}
   </div>
 
@@ -1255,10 +1303,11 @@ function vVender(){
     <h3>Estampar al momento</h3>
     <p style="font-size:12.5px;color:var(--suave);margin:0 0 10px">
       Saca la lisa de bodega, la estampa y la vende en la misma operación.</p>
-    ${usaDis()&&!S.disenos.length?'<div class="aviso err">Crea primero los diseños en Ajustes.</div>':''}
-    <div class="${usaDis()?'g2':''}">
-      ${usaDis()?`<select id="xDis">${S.disenos.map(d=>`<option value="${d.id}">${esc(d.n)}</option>`).join('')}</select>`:''}
-      <select id="xLin">${S.lineas.map(x=>`<option value="${x.id}">${esc(x.n)}</option>`).join('')}</select>
+    ${usaDis(tmp.xLin||S.lineas[0].id)&&!S.disenos.length?'<div class="aviso err">Crea primero los diseños en Ajustes.</div>':''}
+    <div class="${usaDis(tmp.xLin||S.lineas[0].id)?'g2':''}">
+      <select id="xLin" onchange="tmp.xLin=this.value;pintar()">${S.lineas.map(x=>
+        `<option value="${x.id}"${(tmp.xLin||S.lineas[0].id)===x.id?' selected':''}>${esc(x.n)}</option>`).join('')}</select>
+      ${usaDis(tmp.xLin||S.lineas[0].id)?`<select id="xDis">${S.disenos.map(d=>`<option value="${d.id}">${esc(d.n)}</option>`).join('')}</select>`:''}
     </div>
     <div class="g3" style="margin-top:8px">
       <select id="xCol">${optColor()}</select>
@@ -1278,8 +1327,8 @@ function vVender(){
       const [,lin,c,t]=k.split('|'), [d]=k.split('|');
       return `<button class="prod" onclick="A.agregar('${k}')">
         <div><span class="punto" style="background:${color(c).hex}"></span>
-          ${usaDis()?`<span class="tag">${esc(linea(lin).n)}</span>`:''}</div>
-        <div style="font-weight:700;font-size:14px;margin-top:5px;line-height:1.2">${esc(usaDis()?diseno(d).n:linea(lin).n)}</div>
+          ${usaDis(lin)?`<span class="tag">${esc(linea(lin).n)}</span>`:''}</div>
+        <div style="font-weight:700;font-size:14px;margin-top:5px;line-height:1.2">${esc(usaDis(lin)?diseno(d).n:linea(lin).n)}</div>
         <div style="font-size:12px;color:var(--suave)">${esc(color(c).n)} · Talla ${esc(talla(t).n)}</div>
         <div style="display:flex;justify-content:space-between;align-items:baseline;margin-top:7px">
           <b class="cifra">${cop(precioPor(lin,1,tv))}</b>
@@ -1356,8 +1405,8 @@ function pintarLista(){
     const p=k.split('|');
     return `<button class="prod" onclick="A.agregar('${k}')">
       <div><span class="punto" style="background:${color(p[2]).hex}"></span>
-        ${usaDis()?`<span class="tag">${esc(linea(p[1]).n)}</span>`:''}</div>
-      <div style="font-weight:700;font-size:14px;margin-top:5px;line-height:1.2">${esc(usaDis()?diseno(p[0]).n:linea(p[1]).n)}</div>
+        ${usaDis(p[1])?`<span class="tag">${esc(linea(p[1]).n)}</span>`:''}</div>
+      <div style="font-weight:700;font-size:14px;margin-top:5px;line-height:1.2">${esc(usaDis(p[1])?diseno(p[0]).n:linea(p[1]).n)}</div>
       <div style="font-size:12px;color:var(--suave)">${esc(color(p[2]).n)} · Talla ${esc(talla(p[3]).n)}</div>
       <div style="display:flex;justify-content:space-between;align-items:baseline;margin-top:7px">
         <b class="cifra">${cop(precioPor(p[1],1,tv))}</b>
@@ -1592,19 +1641,18 @@ function vAjustes(){
         </div>
         <div style="font-size:11px;color:var(--suave);margin-top:4px">
           Queda en ${cop(L.pack.precio/L.pack.und)} por camiseta</div>
+        <label style="display:flex;align-items:center;gap:9px;text-transform:none;font-size:13.5px;
+          letter-spacing:0;color:var(--texto);margin:10px 0 0;background:#fafafa;
+          border-radius:10px;padding:9px 11px">
+          <input type="checkbox" id="ld${i}" style="width:auto;min-height:auto"${L.usaDis?' checked':''}>
+          Controlar el diseño de cada camiseta</label>
+        <div style="font-size:11.5px;color:var(--suave);margin-top:4px">
+          Apagado: solo color y talla. Encendido: pide el diseño (Hot Wheels, Spiderman…)
+          y el inventario se separa modelo por modelo.</div>
       </div>`).join('')}
     <div class="g2" style="margin-top:10px">
       <div><label>Alerta de stock bajo</label><input id="stockMin" inputmode="numeric" value="${S.stockMin}"></div>
       <div><label>Nombre del negocio</label><input id="eNom" value="${esc(S.empresa.nombre)}"></div>
-    </div>
-    <div style="background:#fafafa;border-radius:12px;padding:12px;margin-top:12px">
-      <label style="display:flex;align-items:center;gap:9px;text-transform:none;font-size:14px;
-        letter-spacing:0;color:var(--texto);margin:0">
-        <input type="checkbox" id="usaDis" style="width:auto;min-height:auto"${usaDis()?' checked':''}>
-        <b>Controlar cada diseño por separado</b></label>
-      <div style="font-size:12px;color:var(--suave);margin-top:6px">
-        Apagado: solo manejas ${S.lineas.map(l=>esc(l.n)).join(' y ')} por color y talla.
-        Encendido: el inventario se separa modelo por modelo. Con muchos diseños se vuelve difícil de contar.</div>
     </div>
     <div class="g2">
       <div><label>Teléfono</label><input id="eTel" value="${esc(S.empresa.tel)}"></div>
