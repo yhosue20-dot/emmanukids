@@ -468,6 +468,9 @@ A.sugerirCosto=()=>{
 A.guardarApertura=()=>{
   const a=tmp.apertura||{L:[],T:[]};
   if(!a.L.length&&!a.T.length) return decir('Agrega al menos una fila','err');
+  if(tmp.guardandoAp) return decir('Ya se está guardando, espera un momento','err');
+  tmp.guardandoAp=true;
+  const b=$('btnApertura'); if(b){ b.disabled=true; b.textContent='Guardando…' }
   const f=val('aFecha')||hoy();
   const total=a.L.concat(a.T).reduce((s,r)=>s+r.cant*r.cu,0);
   const unidades=a.L.concat(a.T).reduce((s,r)=>s+r.cant,0);
@@ -476,8 +479,9 @@ A.guardarApertura=()=>{
     a.T.forEach(r=>entrada('T',r.k,r.cant,r.cu,{f,t:'INICIAL',ref:'Apertura'}));
     asiento(f,'Inventario inicial',[
       {cuenta:'14 Inventarios',d:total},{cuenta:'3115 Capital',c:total}]);
-  },[],()=>{tmp.apertura={L:[],T:[]};
-    return num(unidades)+' camisetas cargadas por '+cop(total)+'. La caja no se movió.'});
+  },[],()=>{tmp.apertura={L:[],T:[]}; tmp.guardandoAp=false;
+    return num(unidades)+' camisetas cargadas por '+cop(total)+'. La caja no se movió.'})
+    .finally(()=>{tmp.guardandoAp=false});
 };
 /* --- Saldo inicial de caja y bancos (o ajuste si no cuadra) --- */
 A.fijarSaldo=()=>{
@@ -1144,7 +1148,7 @@ function vInventario(){
       ${(ap.L.length+ap.T.length)?`<div class="aviso ok" style="margin-top:14px">
         ${num(ap.L.reduce((s,r)=>s+r.cant,0)+ap.T.reduce((s,r)=>s+r.cant,0))} camisetas ·
         ${cop(ap.L.concat(ap.T).reduce((s,r)=>s+r.cant*r.cu,0))} en inventario</div>`:''}
-      <button class="b" style="margin-top:12px" onclick="A.guardarApertura()">Guardar inventario inicial</button>
+      <button class="b" id="btnApertura" style="margin-top:12px" onclick="A.guardarApertura()">Guardar inventario inicial</button>
       <button class="b g" style="margin-top:8px;background:none;border:0;color:var(--suave)"
         onclick="tmp.abrirApertura=false;pintar()">Cerrar</button>
     `}
