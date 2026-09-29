@@ -661,6 +661,22 @@ function lineasCarrito(){
   return base;
 }
 A.tipoVenta=t=>{tmp.tipoVenta=t;pintar()};
+A.nuevoCliente=()=>{
+  const n=(prompt('Nombre del cliente:')||'').trim();
+  if(!n) return;
+  const tel=(prompt('Teléfono (opcional):')||'').trim();
+  const nuevo={id:id(),n,tel,cupo:0};
+  S.clientes.push(nuevo);
+  guardarCfg({clientes:S.clientes});
+  tmp.ultCli=nuevo.id;
+  tmp.nota=val('vNota')||'';
+  decir(n+' agregado');
+  pintar();
+};
+A.vaciar=()=>{
+  if((tmp.carrito||[]).length&&!confirm('¿Vaciar el carrito?')) return;
+  tmp.carrito=[];tmp.precioMan={};tmp.packMan={};tmp.totalMan=0;tmp.cobrando=false;pintar();
+};
 A.totalCombo=()=>{
   const ls=lineasCarrito();
   const unid=ls.reduce((s,l)=>s+l.cant,0);
@@ -700,6 +716,7 @@ A.cobrar=fiado=>{
   const ls=lineasCarrito();
   if(!ls.length) return decir('El carrito está vacío','err');
   const f=hoy(), clId=val('vCliente')||'cl0', qId=val('vCuenta');
+  const nota=(val('vNota')||'').trim();
   const total=ls.reduce((s,l)=>s+l.neto,0);
   const costo=ls.reduce((s,l)=>s+l.costo,0);
   for(const l of ls){
@@ -734,7 +751,7 @@ A.cobrar=fiado=>{
     });
     const costoReal=det.reduce((s,d)=>s+d.costo,0);
     if(estTotal>0&&qId) mover(qId,'EGRESO',estTotal,'Transfers venta '+nro,f);
-    nuevoDoc('facturas',{nro,f,cliente:clId,tipo:tipoV,det,total,
+    nuevoDoc('facturas',{nro,f,cliente:clId,nota,tipo:tipoV,det,total,
       abonado:recibido,saldo,costo:costoReal,util:total-costoReal,limite,cuentaPago:qId,
       estado:saldo<=0?'PAGADA':(recibido>0?'PARCIAL':'PENDIENTE')});
     if(recibido>0){
@@ -751,7 +768,7 @@ A.cobrar=fiado=>{
       {cuenta:'1435 Inventario lisas',c:costoLisas},
       {cuenta:'1105 Caja y bancos',c:estTotal}]);
     return nro;
-  },[],nro=>{tmp.carrito=[];tmp.precioMan={};tmp.packMan={};tmp.totalMan=0;tmp.cobrando=false;
+  },[],nro=>{tmp.carrito=[];tmp.precioMan={};tmp.packMan={};tmp.totalMan=0;tmp.cobrando=false;tmp.nota='';
     return 'Factura '+nro+' por '+cop(total)+(saldo>0?' · queda debiendo '+cop(saldo):'')});
 };
 
@@ -801,6 +818,7 @@ A.anular=facId=>{
 };
 
 /* --- Anular orden de producción: devuelve las lisas y quita las estampadas --- */
+A.verLote=id=>{ tmp.lote=tmp.lote||{}; tmp.lote[id]=!tmp.lote[id]; pintar() };
 A.anularOrden=id=>{
   const o=S.ordenes.find(x=>x._id===id); if(!o)return;
   if(o.estado==='ANULADA') return;
@@ -1176,6 +1194,21 @@ function vTaller(){
         return ds.length>1?ds.length+' diseños':diseno(ds[0]).n})())+' · ':''}${esc(linea(o.linea).n)}${
         o.estado==='ANULADA'?' <span class="tag rojo">ANULADA</span>':''}</div>
         <div class="s">${o.ref||''} · ${fecha(o.f)} · ${o.buenas} buenas${o.merma?', '+o.merma+' dañadas':''}</div>
+        <button onclick="A.verLote('${o._id}')" style="border:0;background:none;padding:3px 0;
+          color:var(--tinta);font-size:12.5px;font-weight:600;cursor:pointer">
+          ${(tmp.lote||{})[o._id]?'▾ Ocultar detalle':'▸ Ver qué lleva'}</button>
+        ${(tmp.lote||{})[o._id]?`<div style="background:#faf9fb;border-radius:11px;padding:9px 11px;
+          margin-top:4px;font-size:12.5px">
+          ${(o.filas||[]).map(r=>{const [c,t]=r.k.split('|');
+            return `<div style="padding:2.5px 0">
+              <span class="punto" style="background:${color(c).hex}"></span>
+              ${usaDis(o.linea)?'<b>'+esc(diseno(r.dis||o.diseno).n)+'</b> · ':''}${esc(color(c).n)} ·
+              T${esc(talla(t).n)} · <b>${r.cant-r.merma}</b>${r.merma?` <span style="color:var(--tinta)">(${r.merma} dañada${r.merma===1?'':'s'})</span>`:''}
+            </div>`}).join('')||'<div style="color:var(--suave)">Sin detalle guardado</div>'}
+          <div style="border-top:1px solid var(--linea);margin-top:6px;padding-top:6px;color:var(--suave)">
+            Lisas ${cop(o.costoLisas)} · transfer ${cop(o.est*o.procesadas)} · mano de obra ${cop(o.mo)}
+            → total ${cop(o.costoTotal)}</div>
+        </div>`:''}
         ${o.estado!=='ANULADA'&&admin()?`<div style="margin-top:6px">
           <button class="b g chico" onclick="A.anularOrden('${o._id}')">Anular</button></div>`:''}</div>
       <div class="m cifra">${cop(o.cu)}<div class="s" style="font-weight:400">c/u</div></div></div>`).join('')
@@ -1461,7 +1494,9 @@ function vVender(){
     </div>`:''}
 
     <div class="item" style="border-top:1px solid var(--linea);border-bottom:0">
-      <div><div class="t">${unid} unidades</div>
+      <div><div class="t">${unid} unidades
+        <button onclick="A.vaciar()" style="border:0;background:none;padding:0 0 0 8px;
+          color:var(--suave);font-size:12.5px;cursor:pointer">Vaciar ✕</button></div>
         <button onclick="A.totalCombo()" style="border:0;background:none;padding:2px 0;
           color:${tmp.totalMan>0?'var(--tinta)':'var(--suave)'};font-size:12.5px;cursor:pointer">
           ${tmp.totalMan>0?'Precio de combo fijado ✎':'Poner precio al combo ✎'}</button>
@@ -1472,7 +1507,13 @@ function vVender(){
 
     ${tmp.cobrando?`
       <label>Cliente</label>
-      <select id="vCliente">${S.clientes.map(c=>`<option value="${c.id}">${esc(c.n)}</option>`).join('')}</select>
+      <div class="fila">
+        <select id="vCliente">${S.clientes.map(c=>
+          `<option value="${c.id}"${tmp.ultCli===c.id?' selected':''}>${esc(c.n)}</option>`).join('')}</select>
+        <button class="b g chico" style="flex:0 0 auto" onclick="A.nuevoCliente()">+ Nuevo</button>
+      </div>
+      <label>Nota de la venta (opcional)</label>
+      <input id="vNota" placeholder="Pedido WhatsApp, entrega el viernes…" value="${esc(tmp.nota||'')}">
       <label>Entra el dinero a</label>
       <select id="vCuenta">${optCuenta()}</select>
       <div class="g2">
@@ -1513,6 +1554,7 @@ function vFacturas(){
   return `<div class="card"><h3>Facturas</h3>
     ${fs.length?fs.slice(0,60).map(f=>`<div class="item">
       <div><div class="t">${f.nro} · ${esc(cliente(f.cliente).n)}</div>
+        ${f.nota?`<div class="s" style="color:var(--texto)">${esc(f.nota)}</div>`:''}
         <div class="s">${fecha(f.f)} · ${f.det.reduce((s,d)=>s+d.cant,0)} und ·
           <span class="tag ${f.estado==='PAGADA'?'verde':f.estado==='ANULADA'?'':'rojo'}">${f.estado}</span></div>
         <div style="margin-top:6px;display:flex;gap:6px">
