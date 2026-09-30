@@ -547,8 +547,9 @@ A.guardarApertura=()=>{
   const total=a.L.concat(a.T).reduce((s,r)=>s+r.cant*r.cu,0);
   const unidades=a.L.concat(a.T).reduce((s,r)=>s+r.cant,0);
   correr(()=>{
-    a.L.forEach(r=>entrada('L',r.k,r.cant,r.cu,{f,t:'INICIAL',ref:'Apertura'}));
-    a.T.forEach(r=>entrada('T',r.k,r.cant,r.cu,{f,t:'INICIAL',ref:'Apertura'}));
+    const hh=new Date().toTimeString().slice(0,5);
+    a.L.forEach(r=>entrada('L',r.k,r.cant,r.cu,{f,t:'INICIAL',ref:hh}));
+    a.T.forEach(r=>entrada('T',r.k,r.cant,r.cu,{f,t:'INICIAL',ref:hh}));
     asiento(f,'Inventario inicial',[
       {cuenta:'14 Inventarios',d:total},{cuenta:'3115 Capital',c:total}]);
   },[],()=>{tmp.apertura={L:[],T:[]};
@@ -689,7 +690,7 @@ A.nuevoCliente=()=>{
 A.verVentas=cual=>{
   const h=hoy(), mes=h.slice(0,7);
   const fs=S.facturas.filter(f=>f.estado!=='ANULADA'&&
-    (cual==='hoy'?f.f===h:f.f.slice(0,7)===mes)).slice().reverse();
+    (cual==='hoy'?f.f===h:f.f.slice(0,7)===mes));
   const tot=fs.reduce((s,f)=>s+f.total,0);
   const util=fs.reduce((s,f)=>s+f.util,0);
   const und=fs.reduce((s,f)=>s+f.det.reduce((x,d)=>x+d.cant,0),0);
@@ -1276,7 +1277,7 @@ function vCompras(){
   </div>
 
   <div class="card"><h3>Compras recientes</h3>
-    ${S.compras.slice().reverse().slice(0,15).map(c=>`<div class="item">
+    ${S.compras.slice(0,15).map(c=>`<div class="item">
       <div><div class="t">${esc(c.nro||c.ref)}${c.estado==='ANULADA'?' <span class="tag rojo">ANULADA</span>':''}</div>
         <div class="s">${fecha(c.f)} · ${esc(c.prov||'sin proveedor')} · ${num(c.items.reduce((s,i)=>s+i.cant,0))} und</div>
         ${c.estado!=='ANULADA'&&admin()?`<div style="margin-top:6px">
@@ -1338,7 +1339,7 @@ function vTaller(){
   </div>
 
   <div class="card"><h3>Producciones anteriores</h3>
-    ${S.ordenes.slice().reverse().slice(0,15).map(o=>`<div class="item">
+    ${S.ordenes.slice(0,15).map(o=>`<div class="item">
       <div><div class="t">${usaDis(o.linea)?esc((()=>{
         const ds=[...new Set((o.filas||[]).map(r=>r.dis||o.diseno))];
         return ds.length>1?ds.length+' diseños':diseno(ds[0]).n})())+' · ':''}${esc(linea(o.linea).n)}${
@@ -1537,15 +1538,53 @@ function vInventario(){
       :'<div class="vacio">No hay lisas. Registra una compra.</div>'}
   </div>
 
-  <div class="card"><h3>Movimientos recientes</h3>
-    <div class="scroll"><table>
-      <tr><th>Fecha</th><th>Referencia</th><th>Mov.</th><th class="n">Cant.</th><th class="n">Saldo</th></tr>
-      ${S.kardex.slice().reverse().slice(0,40).map(m=>`<tr>
-        <td>${fecha(m.f)}</td><td>${esc(m.tipo==='L'?nomL(m.k):nomT(m.k))}</td>
-        <td>${m.doc}</td><td class="n">${m.mov==='SALIDA'?'−':'+'}${m.cant}</td>
-        <td class="n">${m.saldo}</td></tr>`).join('')||'<tr><td colspan="5" style="color:#999">Sin movimientos</td></tr>'}
-    </table></div>
+  <div class="card"><h3>Movimientos por lote</h3>
+    ${lotes()}
   </div>`;
+}
+
+/* Agrupa el kardex por operación: una carga, una compra, un estampado o
+   una venta salen como una sola línea que se abre para ver el detalle. */
+const NOMDOC={INICIAL:'Carga inicial',COMPRA:'Compra',PRODUCCION:'Estampado',
+  ESTAMPADO:'Estampado al vender',VENTA:'Venta',AJUSTE:'Ajuste',
+  ANULACION:'Anulación',DEVOLUCION:'Devolución'};
+function lotes(){
+  const g=[], idx={};
+  S.kardex.slice(0,400).forEach(m=>{
+    const key=m.f+'|'+m.doc+'|'+(m.ref||'');
+    if(idx[key]==null){ idx[key]=g.length;
+      g.push({key,f:m.f,doc:m.doc,ref:m.ref||'',filas:[],ent:0,sal:0}) }
+    const L=g[idx[key]]; L.filas.push(m);
+    if(m.mov==='SALIDA') L.sal+=m.cant; else L.ent+=m.cant;
+  });
+  if(!g.length) return '<div class="vacio">Sin movimientos todavía.</div>';
+  return g.slice(0,25).map(L=>{
+    const ab=(tmp.lote||{})[L.key];
+    const refs=new Set(L.filas.map(x=>x.tipo+x.k)).size;
+    return `<div class="item" style="display:block">
+      <button onclick="A.verLote('${L.key}')" style="border:0;background:none;padding:0;
+        width:100%;text-align:left;cursor:pointer;display:flex;justify-content:space-between;
+        gap:10px;align-items:baseline">
+        <span>
+          <span class="t">${ab?'▾':'▸'} ${esc(NOMDOC[L.doc]||L.doc)}</span>
+          <span class="s" style="display:block">${fecha(L.f)}${L.ref?' · '+esc(L.ref):''} ·
+            ${refs} referencia${refs===1?'':'s'}</span>
+        </span>
+        <span class="m cifra" style="white-space:nowrap">
+          ${L.ent?`<span style="color:var(--ok)">+${L.ent}</span>`:''}
+          ${L.ent&&L.sal?' ':''}
+          ${L.sal?`<span style="color:var(--tinta)">−${L.sal}</span>`:''}</span>
+      </button>
+      ${ab?`<div style="background:#faf9fb;border-radius:11px;padding:8px 11px;margin-top:7px">
+        <table style="font-size:12.5px">
+          ${L.filas.map(m=>`<tr>
+            <td>${esc(m.tipo==='L'?nomL(m.k):nomT(m.k))}</td>
+            <td class="n" style="white-space:nowrap;color:${m.mov==='SALIDA'?'var(--tinta)':'var(--ok)'}">
+              ${m.mov==='SALIDA'?'−':'+'}${m.cant}</td>
+            <td class="n" style="color:var(--suave)">quedan ${m.saldo}</td></tr>`).join('')}
+        </table>
+      </div>`:''}
+    </div>`}).join('');
 }
 
 /* ── Vender ─────────────────────────────────────────────── */
@@ -1754,7 +1793,7 @@ function pintarLista(){
 
 /* ── Facturas ───────────────────────────────────────────── */
 function vFacturas(){
-  const fs=S.facturas.slice().reverse();
+  const fs=S.facturas.slice();
   return `<div class="card"><h3>Facturas</h3>
     ${fs.length?fs.slice(0,60).map(f=>`<div class="item">
       <div><div class="t">${f.nro} · ${esc(cliente(f.cliente).n)}</div>
@@ -1865,7 +1904,7 @@ function vCaja(){
   </div>
 
   <div class="card"><h3>Movimientos</h3>
-    ${S.caja.slice().reverse().slice(0,40).map(m=>`<div class="item">
+    ${S.caja.slice(0,40).map(m=>`<div class="item">
       <div><div class="t">${esc(m.concepto)}</div>
         <div class="s">${fecha(m.f)} · ${esc(cuenta(m.cuenta).n)}</div></div>
       <div class="m cifra" style="color:${m.tipo==='INGRESO'?'var(--ok)':'var(--tinta)'}">
@@ -1951,7 +1990,7 @@ function vReportes(){
   <div class="card"><h3>Libro diario</h3>
     <div class="scroll"><table>
       <tr><th>Fecha</th><th>Concepto</th><th>Cuenta</th><th class="n">Débito</th><th class="n">Crédito</th></tr>
-      ${S.asientos.filter(a=>a.f>=d&&a.f<=ha).slice().reverse().slice(0,60).flatMap(a=>
+      ${S.asientos.filter(a=>a.f>=d&&a.f<=ha).slice(0,60).flatMap(a=>
         a.lineas.map((l,i)=>`<tr><td>${i===0?fecha(a.f):''}</td><td>${i===0?esc(a.concepto):''}</td>
         <td>${esc(l.cuenta)}</td><td class="n">${l.d?cop(l.d):''}</td>
         <td class="n">${l.c?cop(l.c):''}</td></tr>`)).join('')
