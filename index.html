@@ -182,7 +182,7 @@ import {initializeApp} from 'https://www.gstatic.com/firebasejs/10.12.2/firebase
 import {getAuth,signInWithEmailAndPassword,signOut,onAuthStateChanged}
   from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
 import {getFirestore,doc,collection,onSnapshot,query,orderBy,limit,
-  runTransaction,setDoc,getDoc,getDocs,writeBatch,enableIndexedDbPersistence}
+  runTransaction,setDoc,getDoc,getDocs,writeBatch,deleteDoc,enableIndexedDbPersistence}
   from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 
 /* ╔═══════════════════════════════════════════════════════╗
@@ -362,7 +362,12 @@ async function correr(fn,extras,ok){
   if(activo&&activo.tagName==='BUTTON'&&activo.classList.contains('b'))
     activo.textContent='Guardando…';
   try{ const r=await tx(fn,extras||[]); decir(typeof ok==='function'?ok(r):ok) }
-  catch(e){ decir(e.message||'No se pudo guardar. Revisa la conexión.','err') }
+  catch(e){
+    const permiso=/permission|insufficient|denied/i.test(e.code||e.message||'');
+    decir(permiso
+      ?'Firebase no deja guardar esto. Falta publicar la regla de esa colección en Consola → Firestore → Reglas.'
+      :(e.message||'No se pudo guardar. Revisa la conexión.'),'err');
+  }
   finally{
     corriendo=false;
     previo.forEach(([b,d,t])=>{ if(b.isConnected){ b.disabled=d; b.textContent=t } });
@@ -1153,10 +1158,16 @@ A.pedidoEstado=(id,est)=>{
       e==='LISTO'?'listo para entregar':'pendiente'));
 };
 A.borrarPedido=id=>{
-  if(!confirm('¿Borrar este pedido? No afecta inventario ni caja.')) return;
+  if(!confirm('¿Cancelar este pedido? No afecta inventario ni caja.')) return;
   const ref=doc(db,'pedidos',id);
   correr(ex=>{ PEND.updates.push({ref,data:{estado:'CANCELADO'}}); return 1 },
     [ref],()=>'Pedido cancelado');
+};
+A.eliminarPedido=async id=>{
+  if(!admin()) return decir('Solo el administrador','err');
+  if(!confirm('¿Borrar el pedido para siempre?\n\nNo afecta inventario ni caja, solo desaparece de la lista.')) return;
+  try{ await deleteDoc(doc(db,'pedidos',id)); decir('Pedido borrado') }
+  catch(e){ decir('No se pudo borrar. Revisa la conexión.','err') }
 };
 /* Manda las camisetas del pedido al formulario de Taller */
 A.pedidoATaller=id=>{
@@ -2037,7 +2048,11 @@ function vPedidos(){
           <button class="b g chico" onclick="A.imprimirPedido('${p._id}')">🖨 Imprimir</button>
           <button class="b g chico" onclick="A.pedidoEstado('${p._id}','ENTREGADO')">Entregado</button>
           ${admin()?`<button class="b g chico" onclick="A.borrarPedido('${p._id}')">Cancelar</button>`:''}
-        </div>`:''}
+        </div>`:`
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:9px">
+          <button class="b g chico" onclick="A.pedidoEstado('${p._id}','PENDIENTE')">Reabrir</button>
+          ${admin()?`<button class="b g chico" onclick="A.eliminarPedido('${p._id}')">Borrar</button>`:''}
+        </div>`}
     </div>`;
   };
 
