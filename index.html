@@ -135,7 +135,24 @@ table.malla tr.pie td{border-top:2px solid var(--linea);font-weight:700;color:va
   body>*{display:none!important}
   #recibo{display:block!important;font-family:ui-monospace,Menlo,monospace;font-size:12px;padding:0}
   #recibo hr{border:0;border-top:1px dashed #000}
+  #recibo .hoja{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#000}
 }
+.hoja{padding:4px}
+.hcab{display:flex;justify-content:space-between;align-items:flex-start;
+  border-bottom:3px solid #000;padding-bottom:8px;margin-bottom:10px}
+.hquien{font-size:26px;font-weight:800;line-height:1.1}
+.hsub{font-size:12px;color:#444;margin-top:3px}
+.hfecha{font-size:11px;letter-spacing:.08em;line-height:1.3}
+.hfecha b{font-size:17px;letter-spacing:0}
+.hnota{border:1px solid #000;padding:6px 9px;font-size:13px;margin-bottom:10px}
+.htab{width:100%;border-collapse:collapse}
+.htab td{border-bottom:1px solid #bbb;padding:9px 4px;vertical-align:middle}
+.hchk{font-size:26px;width:34px;line-height:1}
+.hcant{font-size:24px;font-weight:800;width:44px;text-align:center}
+.hdet b{font-size:17px}
+.hlin{font-size:11px;border:1px solid #000;border-radius:9px;padding:1px 6px;margin-left:6px}
+.hcol{font-size:14px;margin-top:2px}
+.hpie{margin-top:14px;font-size:10.5px;color:#666;text-align:center}
 </style>
 </head>
 <body>
@@ -148,6 +165,7 @@ table.malla tr.pie td{border-top:2px solid var(--linea);font-weight:700;color:va
     <div><b>EMMANUKIDS</b><small id="hsub">Administración</small></div>
     <button class="b g chico" onclick="A.salir()">Salir · <span id="quien"></span></button>
   </header>
+  <div id="msg" style="padding:14px 14px 0"></div>
   <main id="vista"></main>
   <nav id="nav"></nav>
 </div>
@@ -203,8 +221,20 @@ const id=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,7);
 const val=x=>{const e=$(x);return e?e.value:''};
 const nval=x=>+String(val(x)).replace(/[^\d.-]/g,'')||0;
 
-function decir(texto,tipo){msg={texto,tipo:tipo||'ok'};pintar();
-  setTimeout(()=>{if(msg&&msg.texto===texto){msg=null;pintar()}},4500)}
+/* El aviso tiene su propio recuadro: cambiarlo no redibuja la pantalla,
+   así no se pierde lo que estás escribiendo ni se siente lento.        */
+function pintarMsg(){
+  const e=document.getElementById('msg'); if(!e)return;
+  e.innerHTML=msg?`<div class="aviso ${msg.tipo==='err'?'err':'ok'}"
+    style="margin:0">${esc(msg.texto)}</div>`:'';
+  e.style.display=msg?'block':'none';
+}
+let tMsg=null;
+function decir(texto,tipo){
+  msg={texto,tipo:tipo||'ok'}; pintarMsg();
+  clearTimeout(tMsg);
+  tMsg=setTimeout(()=>{msg=null;pintarMsg()},4500);
+}
 
 /* ── Datos iniciales ────────────────────────────────────── */
 function nuevo(){
@@ -230,7 +260,7 @@ function nuevo(){
              {id:'q3',n:'Daviplata',saldo:0},{id:'q4',n:'Bancolombia',saldo:0}],
     catGastos:['Arriendo','Servicios','Envíos','Transporte','Publicidad','Insumos taller','Otros'],
     lisas:{}, terminados:{},
-    compras:[], ordenes:[], facturas:[], pagos:[], gastos:[],
+    compras:[], ordenes:[], facturas:[], pagos:[], gastos:[], pedidos:[],
     kardex:[], caja:[], asientos:[],
     consecutivo:0, stockMin:5
   };
@@ -265,7 +295,8 @@ async function sembrar(){
 function escuchar(){
   S=nuevo();
   const listas=[['facturas',400],['compras',150],['ordenes',150],['gastos',300],
-                ['pagos',400],['kardex',400],['caja',400],['asientos',400]];
+                ['pagos',400],['kardex',400],['caja',400],['asientos',400],
+                ['pedidos',200]];
 
   onSnapshot(rCfg,d=>{ if(d.exists()) Object.assign(S,d.data());
     S.lineas.forEach(L=>{ if(!L.pack) L.pack={und:3,precio:Math.round(L.precio*3*0.87)} });
@@ -302,6 +333,7 @@ async function tx(fn,extras=[]){
     S.cuentas=(cS.data()||{}).lista||S.cuentas;
     const g=gS.data()||{};
     S.consecutivo=g.consecutivo||0; S.consCompra=g.consCompra||0; S.consOrden=g.consOrden||0;
+    S.consPedido=g.consPedido||0;
 
     PEND={docs:[],updates:[],cfg:null};
     const r=fn(ex);
@@ -334,6 +366,7 @@ async function correr(fn,extras,ok){
   finally{
     corriendo=false;
     previo.forEach(([b,d,t])=>{ if(b.isConnected){ b.disabled=d; b.textContent=t } });
+    pintar();
   }
 }
 
@@ -482,6 +515,7 @@ A.addProdFila=()=>{
     metidas+=q;
   });
   S.colores.forEach(c=>{ const e=$('pq_'+c.id); if(e) e.value='' });
+  pintar();
   decir(num(metidas)+' lisas talla '+esc(talla(t).n)+' agregadas');
 };
 A.delProdFila=i=>{tmp.prod.splice(i,1);pintar()};
@@ -712,7 +746,7 @@ function lineasCarrito(){
 }
 A.tipoVenta=t=>{tmp.tipoVenta=t;pintar()};
 A.nuevoCliente=()=>{
-  const n=(prompt('Nombre del cliente:')||'').trim();
+  const n=(prompt('Nombre del cliente:',val('qNom')||'')||'').trim();
   if(!n) return;
   const tel=(prompt('Teléfono (opcional):')||'').trim();
   const nuevo={id:id(),n,tel,cupo:0};
@@ -1081,6 +1115,90 @@ A.empezarCero=async()=>{
   }catch(e){ decir('No se pudo borrar todo: '+(e.message||'revisa la conexión'),'err') }
 };
 
+/* ── Pedidos ────────────────────────────────────────────────
+   Se anota lo que el cliente encargó. No mueve inventario ni plata:
+   eso pasa cuando lo estampas (Taller) y cuando lo cobras (Vender). */
+A.addPedidoFila=()=>{
+  const l=val('qLin'), d=usaDis(l)?val('qDis'):DGEN;
+  const c=val('qCol'), t=val('qTal'), q=nval('qCant')||1;
+  if(usaDis(l)&&!d) return decir('Primero crea el diseño en Ajustes','err');
+  if(!l||!c||!t) return decir('Escoge línea, color y talla','err');
+  tmp.ped=tmp.ped||[];
+  const k=kT(d,l,c,t);
+  const ya=tmp.ped.find(r=>r.k===k);
+  if(ya) ya.cant+=q; else tmp.ped.push({k,cant:q});
+  $('qCant').value='1';
+  pintar();
+  decir(q+' × '+nomT(k)+' anotada');
+};
+A.delPedidoFila=i=>{tmp.ped.splice(i,1);pintar()};
+A.guardarPedido=()=>{
+  const items=tmp.ped||[];
+  if(!items.length) return decir('Anota al menos una camiseta','err');
+  const cli=val('qCliente')||'cl0', nota=(val('qNota')||'').trim();
+  const nom=(val('qNom')||'').trim();
+  const entrega=val('qEntrega')||'';
+  if(!nom&&cli==='cl0') return decir('Escribe el nombre de quien encargó','err');
+  correr(()=>{
+    const ref='P-'+String((S.consPedido||0)+1).padStart(4,'0');
+    PEND.cfg={consPedido:(S.consPedido||0)+1};
+    nuevoDoc('pedidos',{ref,f:hoy(),cliente:cli,nom,nota,entrega,items,estado:'PENDIENTE'});
+    return ref;
+  },[],ref=>{tmp.ped=[];tmp.nuevoPed=false;return 'Pedido '+ref+' anotado'});
+};
+A.pedidoEstado=(id,est)=>{
+  const ref=doc(db,'pedidos',id);
+  correr(ex=>{ PEND.updates.push({ref,data:{estado:est}}); return est },
+    [ref],e=>'Pedido marcado como '+(e==='ENTREGADO'?'entregado':
+      e==='LISTO'?'listo para entregar':'pendiente'));
+};
+A.borrarPedido=id=>{
+  if(!confirm('¿Borrar este pedido? No afecta inventario ni caja.')) return;
+  const ref=doc(db,'pedidos',id);
+  correr(ex=>{ PEND.updates.push({ref,data:{estado:'CANCELADO'}}); return 1 },
+    [ref],()=>'Pedido cancelado');
+};
+/* Manda las camisetas del pedido al formulario de Taller */
+A.pedidoATaller=id=>{
+  const p=S.pedidos.find(x=>x._id===id); if(!p)return;
+  const lin=p.items[0].k.split('|')[1];
+  const otras=p.items.some(r=>r.k.split('|')[1]!==lin);
+  tmp.lin=lin; tmp.prod=[];
+  const sinLisa=[]; let cargadas=0;
+  p.items.filter(r=>r.k.split('|')[1]===lin).forEach(r=>{
+    // Solo se manda a estampar lo que NO está ya en bodega
+    const falta=r.cant-invT(r.k).cant;
+    if(falta<=0) return;
+    const [d,,c,t]=r.k.split('|'), kl=kL(c,t);
+    const libres=invL(kl).cant-tmp.prod.filter(x=>x.k===kl).reduce((s,x)=>s+x.cant,0);
+    if(libres<falta){ sinLisa.push(nomL(kl)+' (hay '+libres+', faltan '+falta+')'); return }
+    tmp.prod.push({k:kl,cant:falta,merma:0,dis:d});
+    cargadas+=falta;
+  });
+  ir('taller');
+  decir(sinLisa.length?'Faltan lisas · '+sinLisa.join(' · '):
+    (!cargadas?'Ya tienes todo estampado para ese pedido':
+     'Solo lo que falta: '+cargadas+' camiseta'+(cargadas===1?'':'s')+
+     (otras?'. Lo de la otra línea va en una tanda aparte.':'')),
+    sinLisa.length?'err':'ok');
+};
+/* Manda las camisetas del pedido al carrito de Vender */
+A.pedidoAVenta=id=>{
+  const p=S.pedidos.find(x=>x._id===id); if(!p)return;
+  tmp.carrito=[]; tmp.precioMan={}; tmp.packMan={}; tmp.totalMan=0;
+  const faltan=[];
+  p.items.forEach(r=>{
+    if(invT(r.k).cant<r.cant){ faltan.push(nomT(r.k)+' (hay '+invT(r.k).cant+')'); return }
+    tmp.carrito.push({id:r.k,k:r.k,cant:r.cant});
+  });
+  tmp.ultCli=p.cliente;
+  tmp.nota=p.ref+(p.nom&&p.cliente==='cl0'?' · '+p.nom:'')+(p.nota?' · '+p.nota:'');
+  ir('vender');
+  decir(faltan.length?'Sin estampar todavía: '+faltan.join(' · '):
+    'Carrito listo · cobra y después marca el pedido como entregado',
+    faltan.length?'err':'ok');
+};
+
 /* --- Gastos --- */
 A.guardarGasto=()=>{
   const m=nval('gMonto'), d=val('gDesc');
@@ -1181,7 +1299,7 @@ A.csv=(nombre,filas)=>{
 
 /* --- Imprimir factura --- */
 A.imprimir=facId=>{
-  const f=S.facturas.find(x=>x.id===facId); if(!f)return;
+  const f=S.facturas.find(x=>x._id===facId); if(!f)return;
   const e=S.empresa;
   $('recibo').innerHTML=`<div style="text-align:center"><b>${esc(e.nombre)}</b><br>
     ${esc(e.nit||'')} ${esc(e.tel||'')}<br>Factura ${f.nro}</div><hr>
@@ -1193,9 +1311,39 @@ A.imprimir=facId=>{
   window.print();
 };
 
+/* Hoja para imprimir y poner encima de las camisas en el taller */
+A.imprimirPedido=id=>{
+  const p=S.pedidos.find(x=>x._id===id); if(!p)return;
+  const und=p.items.reduce((s,r)=>s+r.cant,0);
+  $('recibo').innerHTML=`<div class="hoja">
+    <div class="hcab">
+      <div><div class="hquien">${esc(p.nom||cliente(p.cliente).n)}</div>
+        <div class="hsub">${esc(p.ref)} · pedido del ${fecha(p.f)}</div></div>
+      <div style="text-align:right">
+        ${p.entrega?`<div class="hfecha">ENTREGA<br><b>${fecha(p.entrega)}</b></div>`:''}
+        <div class="hsub">${und} camiseta${und===1?'':'s'}</div></div>
+    </div>
+    ${p.nota?`<div class="hnota">${esc(p.nota)}</div>`:''}
+    <table class="htab">
+      ${p.items.map(r=>{const [d,l,c,t]=r.k.split('|');
+        return `<tr>
+          <td class="hchk">☐</td>
+          <td class="hcant">${r.cant}</td>
+          <td class="hdet">
+            <b>${usaDis(l)?esc(diseno(d).n):esc(linea(l).n)}</b>
+            ${usaDis(l)?'<span class="hlin">'+esc(linea(l).n)+'</span>':''}
+            <div class="hcol">${esc(color(c).n)} · Talla ${esc(talla(t).n)}</div>
+          </td></tr>`}).join('')}
+    </table>
+    <div class="hpie">${esc(S.empresa.nombre)} · impreso ${fecha(hoy())}</div>
+  </div>`;
+  window.print();
+};
+
 /* ═══════════ PANTALLAS ═══════════════════════════════════ */
 const TABS=[
   {k:'inicio',n:'Inicio',i:'◱'},{k:'vender',n:'Vender',i:'＋'},
+  {k:'pedidos',n:'Pedidos',i:'✎'},
   {k:'inventario',n:'Inventario',i:'▤'},{k:'taller',n:'Taller',i:'⚙'},
   {k:'compras',n:'Compras',i:'▽'},{k:'facturas',n:'Facturas',i:'▦'},
   {k:'cartera',n:'Cartera',i:'◷'},{k:'caja',n:'Caja',i:'◈'},
@@ -1846,6 +1994,109 @@ function pintarLista(){
     :'<div class="vacio" style="grid-column:1/-1">Nada coincide con esa búsqueda.</div>';
 }
 
+/* ── Pedidos ────────────────────────────────────────────── */
+function vPedidos(){
+  const ped=tmp.ped||[];
+  const lSel=tmp.qLin||S.lineas[0].id;
+  const abiertos=S.pedidos.filter(p=>p.estado==='PENDIENTE'||p.estado==='LISTO');
+  const cerrados=S.pedidos.filter(p=>p.estado==='ENTREGADO'||p.estado==='CANCELADO');
+  const h=hoy();
+
+  const tarjeta=p=>{
+    const und=p.items.reduce((s,r)=>s+r.cant,0);
+    const listo=p.items.every(r=>invT(r.k).cant>=r.cant);
+    const tarde=p.entrega&&p.entrega<h&&p.estado!=='ENTREGADO';
+    return `<div style="border:1px solid ${tarde?'var(--tinta)':'var(--linea)'};
+      border-radius:14px;padding:12px;margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;gap:10px">
+        <div>
+          <b style="font-size:15px">${esc(p.nom||cliente(p.cliente).n)}</b>
+          <span class="tag ${p.estado==='ENTREGADO'?'verde':p.estado==='CANCELADO'?'':'rojo'}"
+            style="margin-left:6px">${p.estado}</span>
+          <div class="s" style="font-size:12px;color:var(--suave)">
+            ${esc(p.ref)} · ${und} camiseta${und===1?'':'s'}
+            ${p.entrega?' · entrega '+fecha(p.entrega):''}${tarde?' · <b style="color:var(--tinta)">atrasado</b>':''}</div>
+          ${p.nota?`<div style="font-size:12.5px;margin-top:3px">${esc(p.nota)}</div>`:''}
+        </div>
+        ${p.estado!=='ENTREGADO'&&p.estado!=='CANCELADO'?`<div>
+          <span class="tag ${listo?'verde':''}">${listo?'✓ estampado':'por estampar'}</span></div>`:''}
+      </div>
+      <div style="background:#faf9fb;border-radius:11px;padding:8px 10px;margin-top:8px;font-size:12.5px">
+        ${p.items.map(r=>{const c=r.k.split('|')[2];
+          const hay=invT(r.k).cant;
+          return `<div style="padding:2px 0">
+            <span class="punto" style="background:${color(c).hex}"></span>
+            ${esc(nomT(r.k))} · <b>${r.cant}</b>
+            <span style="color:${hay>=r.cant?'var(--ok)':'var(--tinta)'}">
+              ${hay>=r.cant?'✓ en bodega':'faltan '+(r.cant-hay)+' por estampar'}</span></div>`}).join('')}
+      </div>
+      ${p.estado!=='ENTREGADO'&&p.estado!=='CANCELADO'?`
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:9px">
+          ${!listo&&admin()?`<button class="b g chico" onclick="A.pedidoATaller('${p._id}')">Mandar a taller</button>`:''}
+          ${listo?`<button class="b chico" style="width:auto" onclick="A.pedidoAVenta('${p._id}')">Cobrar</button>`:''}
+          <button class="b g chico" onclick="A.imprimirPedido('${p._id}')">🖨 Imprimir</button>
+          <button class="b g chico" onclick="A.pedidoEstado('${p._id}','ENTREGADO')">Entregado</button>
+          ${admin()?`<button class="b g chico" onclick="A.borrarPedido('${p._id}')">Cancelar</button>`:''}
+        </div>`:''}
+    </div>`;
+  };
+
+  return `
+  ${!tmp.nuevoPed?`<button class="b" style="margin-bottom:12px"
+    onclick="tmp.nuevoPed=true;pintar()">+ Anotar un pedido</button>`:`
+  <div class="card"><h3>Nuevo pedido</h3>
+    <label>¿Quién encargó?</label>
+    <input id="qNom" placeholder="Escribe el nombre · ej: Pepito Pérez">
+    <div style="font-size:11.5px;color:var(--suave);margin-top:5px">
+      Con el nombre basta. Escógelo abajo solo si es un cliente fijo al que le fías.</div>
+    <div class="fila" style="margin-top:8px">
+      <select id="qCliente">${S.clientes.map(c=>
+        `<option value="${c.id}"${tmp.ultCli===c.id?' selected':''}>${esc(c.n)}</option>`).join('')}</select>
+      <button class="b g chico" style="flex:0 0 auto" onclick="A.nuevoCliente()">+ Guardar como cliente</button>
+    </div>
+    <div class="g2">
+      <div><label>Entregar el</label><input type="date" id="qEntrega" value="${esc(tmp.qEnt||'')}"></div>
+      <div><label>Nota</label><input id="qNota" placeholder="Pagó por Nequi, pasa el viernes…"></div>
+    </div>
+
+    <label>¿Qué encargó?</label>
+    <div class="${usaDis(lSel)?'g2':''}">
+      <select id="qLin" onchange="tmp.qLin=this.value;pintar()">${S.lineas.map(x=>
+        `<option value="${x.id}"${lSel===x.id?' selected':''}>${esc(x.n)}</option>`).join('')}</select>
+      ${usaDis(lSel)?`<select id="qDis">${S.disenos.map(d=>
+        `<option value="${d.id}">${esc(d.n)}</option>`).join('')}</select>`:''}
+    </div>
+    <div class="g3" style="margin-top:8px">
+      <select id="qCol">${optColor()}</select>
+      <select id="qTal">${optTalla()}</select>
+      <input id="qCant" inputmode="numeric" placeholder="Cant." value="1">
+    </div>
+    <button class="b n chico" style="margin-top:8px" onclick="A.addPedidoFila()">Agregar al pedido</button>
+
+    ${ped.length?`<div style="margin-top:12px">
+      ${ped.map((r,i)=>`<div class="item">
+        <div><div class="t"><span class="punto" style="background:${color(r.k.split('|')[2]).hex}"></span>
+          ${esc(nomT(r.k))}</div>
+          <div class="s">${r.cant} unidad${r.cant===1?'':'es'} · en bodega hay ${invT(r.k).cant}</div></div>
+        <div class="m"><button class="b g chico" style="min-height:30px"
+          onclick="A.delPedidoFila(${i})">✕</button></div>
+      </div>`).join('')}</div>`:'<div class="vacio">Todavía no has anotado nada.</div>'}
+
+    <button class="b" style="margin-top:12px" onclick="A.guardarPedido()">Guardar pedido</button>
+    <button class="b g" style="margin-top:8px;background:none;border:0;color:var(--suave)"
+      onclick="tmp.nuevoPed=false;tmp.ped=[];pintar()">Cerrar</button>
+  </div>`}
+
+  <div class="card"><h3>Por entregar</h3>
+    ${abiertos.length?abiertos.map(tarjeta).join(''):
+      '<div class="vacio">No hay pedidos pendientes.</div>'}
+  </div>
+
+  ${cerrados.length?`<div class="card"><h3>Ya cerrados</h3>
+    ${cerrados.slice(0,15).map(tarjeta).join('')}
+  </div>`:''}`;
+}
+
 /* ── Facturas ───────────────────────────────────────────── */
 function vFacturas(){
   const fs=S.facturas.slice();
@@ -2166,10 +2417,13 @@ function pintar(){
     `<button class="${tab===t.k?'on':''}" onclick="ir('${t.k}')"><span>${t.i}</span>${t.n}</button>`).join('');
   $('hsub').textContent=({inicio:'Resumen del negocio',vender:'Punto de venta',inventario:'Bodega',
     taller:'Estampado',compras:'Compras',facturas:'Ventas emitidas',cartera:'Quién debe',
-    caja:'Dinero',reportes:'Números',ajustes:'Configuración'})[tab]||'';
+    caja:'Dinero',reportes:'Números',ajustes:'Configuración',
+    pedidos:'Encargos por entregar'})[tab]||'';
   const cuerpo={inicio:vInicio,vender:vVender,inventario:vInventario,taller:vTaller,compras:vCompras,
-    facturas:vFacturas,cartera:vCartera,caja:vCaja,reportes:vReportes,ajustes:vAjustes}[tab];
-  $('vista').innerHTML=(msg?`<div class="aviso ${msg.tipo==='err'?'err':'ok'}">${esc(msg.texto)}</div>`:'')+cuerpo();
+    facturas:vFacturas,cartera:vCartera,caja:vCaja,reportes:vReportes,ajustes:vAjustes,
+    pedidos:vPedidos}[tab];
+  $('vista').innerHTML=cuerpo();
+  pintarMsg();
 }
 
 /* ═══════════ ENTRAR ═════════════════════════════════════ */
