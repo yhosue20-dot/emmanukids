@@ -144,7 +144,10 @@ table.malla tr.pie td{border-top:2px solid var(--linea);font-weight:700;color:va
 .hsub{font-size:12px;color:#444;margin-top:3px}
 .hfecha{font-size:11px;letter-spacing:.08em;line-height:1.3}
 .hfecha b{font-size:17px;letter-spacing:0}
+.hpago{margin-top:5px;border:2px solid #000;padding:2px 7px;font-size:12px;font-weight:800;
+  display:inline-block}
 .hnota{border:1px solid #000;padding:6px 9px;font-size:13px;margin-bottom:10px}
+.hfalta{background:#000;color:#fff;padding:6px 9px;font-size:14px;margin-bottom:10px}
 .htab{width:100%;border-collapse:collapse}
 .htab td{border-bottom:1px solid #bbb;padding:9px 4px;vertical-align:middle}
 .hchk{font-size:26px;width:34px;line-height:1}
@@ -152,6 +155,8 @@ table.malla tr.pie td{border-top:2px solid var(--linea);font-weight:700;color:va
 .hdet b{font-size:17px}
 .hlin{font-size:11px;border:1px solid #000;border-radius:9px;padding:1px 6px;margin-left:6px}
 .hcol{font-size:14px;margin-top:2px}
+.hest{font-size:11px;text-align:right;white-space:nowrap;width:92px;color:#555}
+.hest b{font-size:12px;border:2px solid #000;padding:2px 6px;color:#000}
 .hpie{margin-top:14px;font-size:10.5px;color:#666;text-align:center}
 </style>
 </head>
@@ -849,8 +854,11 @@ A.cobrar=fiado=>{
     const min=linea(l.k.split('|')[1]).margenMin||0;
     if(m<min&&!confirm(nomT(l.k)+' deja solo '+m.toFixed(1)+'% de margen (mínimo '+min+'%).\n¿Vender de todos modos?')) return;
   }
-  let recibido=fiado?nval('vAbono'):total;
+  const antic=Math.min(tmp.antic?tmp.antic.monto:0,total);
+  let recibido=fiado?antic+nval('vAbono'):total;
   if(recibido>total) recibido=total;
+  if(recibido<antic) recibido=antic;
+  const nuevo=recibido-antic;          // lo que entra hoy a la cuenta
   const saldo=total-recibido;
   if(saldo>0&&clId==='cl0') return decir('Para fiar necesitas escoger un cliente con nombre','err');
   const limite=saldo>0?(val('vLimite')||''):'';
@@ -876,14 +884,17 @@ A.cobrar=fiado=>{
     const costoReal=det.reduce((s,d)=>s+d.costo,0);
     if(estTotal>0&&qId) mover(qId,'EGRESO',estTotal,'Transfers venta '+nro,f);
     nuevoDoc('facturas',{nro,f,cliente:clId,nota,envio,tipo:tipoV,det,total,
-      abonado:recibido,saldo,costo:costoReal,util:total-costoReal,limite,cuentaPago:qId,
+      abonado:recibido,antic,saldo,costo:costoReal,util:total-costoReal,limite,cuentaPago:qId,
       estado:saldo<=0?'PAGADA':(recibido>0?'PARCIAL':'PENDIENTE')});
-    if(recibido>0){
-      nuevoDoc('pagos',{fac:nro,f,monto:recibido,cuenta:qId,metodo:cuenta(qId).n});
-      mover(qId,'INGRESO',recibido,'Venta '+nro,f);
+    if(nuevo>0){
+      nuevoDoc('pagos',{fac:nro,f,monto:nuevo,cuenta:qId,metodo:cuenta(qId).n});
+      mover(qId,'INGRESO',nuevo,'Venta '+nro,f);
     }
+    if(antic>0&&tmp.antic) PEND.updates.push(
+      {ref:doc(db,'pedidos',tmp.antic.ped),data:{estado:'ENTREGADO'}});
     asiento(f,'Venta '+nro,[
-      {cuenta:'1105 Caja y bancos',d:recibido},
+      {cuenta:'1105 Caja y bancos',d:nuevo},
+      {cuenta:'2805 Anticipos de clientes',d:antic},
       {cuenta:'1305 Clientes',d:saldo},
       {cuenta:'4135 Ventas',c:totalProd},
       {cuenta:'4210 Envíos cobrados',c:envio},
@@ -893,7 +904,7 @@ A.cobrar=fiado=>{
       {cuenta:'1435 Inventario lisas',c:costoLisas},
       {cuenta:'1105 Caja y bancos',c:estTotal}]);
     return nro;
-  },[],nro=>{tmp.carrito=[];tmp.precioMan={};tmp.packMan={};tmp.totalMan=0;tmp.cobrando=false;tmp.nota='';tmp.envio=0;
+  },[],nro=>{tmp.carrito=[];tmp.precioMan={};tmp.packMan={};tmp.totalMan=0;tmp.cobrando=false;tmp.nota='';tmp.envio=0;tmp.antic=null;
     return 'Factura '+nro+' por '+cop(total)+(saldo>0?' · queda debiendo '+cop(saldo):'')});
 };
 
@@ -1147,9 +1158,35 @@ A.guardarPedido=()=>{
   correr(()=>{
     const ref='P-'+String((S.consPedido||0)+1).padStart(4,'0');
     PEND.cfg={consPedido:(S.consPedido||0)+1};
-    nuevoDoc('pedidos',{ref,f:hoy(),cliente:cli,nom,nota,entrega,items,estado:'PENDIENTE'});
+    nuevoDoc('pedidos',{ref,f:hoy(),cliente:cli,nom,nota,entrega,items,
+      pago:tmp.qPago||'',estado:'PENDIENTE'});
     return ref;
-  },[],ref=>{tmp.ped=[];tmp.nuevoPed=false;return 'Pedido '+ref+' anotado'});
+  },[],ref=>{tmp.ped=[];tmp.nuevoPed=false;tmp.qPago='';return 'Pedido '+ref+' anotado'});
+};
+A.abonoPedido=id=>{
+  const p=S.pedidos.find(x=>x._id===id); if(!p)return;
+  const ya=p.abonado||0;
+  const v=prompt('¿Cuánto te mandó?'+(ya?'\nYa tiene abonado '+cop(ya):''),'');
+  if(v===null) return;
+  const m=+String(v).replace(/[^\d]/g,'')||0;
+  if(m<=0) return decir('Escribe cuánto te mandó','err');
+  const nomQ=S.cuentas.map((q,i)=>(i+1)+') '+q.n).join('\n');
+  const pick=prompt('¿A qué cuenta entró?\n'+nomQ,'1');
+  if(pick===null) return;
+  const q=S.cuentas[(+pick||1)-1]; if(!q) return decir('Cuenta inválida','err');
+  const fe=prompt('¿Qué día entró?',hoy()); if(fe===null) return;
+  const f=/^\d{4}-\d{2}-\d{2}$/.test(fe)?fe:hoy();
+  const ref=doc(db,'pedidos',id);
+  correr(ex=>{
+    const d0=ex[0].data();
+    mover(q.id,'INGRESO',m,'Anticipo '+d0.ref,f);
+    asiento(f,'Anticipo '+d0.ref,[
+      {cuenta:'1105 Caja y bancos',d:m},
+      {cuenta:'2805 Anticipos de clientes',c:m}]);
+    PEND.updates.push({ref,data:{abonado:(d0.abonado||0)+m,pago:'PAGADO',
+      anticipos:[...(d0.anticipos||[]),{f,monto:m,cuenta:q.id}]}});
+    return m;
+  },[ref],r=>cop(r)+' entraron a '+q.n);
 };
 A.pedidoEstado=(id,est)=>{
   const ref=doc(db,'pedidos',id);
@@ -1204,6 +1241,7 @@ A.pedidoAVenta=id=>{
   });
   tmp.ultCli=p.cliente;
   tmp.nota=p.ref+(p.nom&&p.cliente==='cl0'?' · '+p.nom:'')+(p.nota?' · '+p.nota:'');
+  tmp.antic=(p.abonado||0)>0?{monto:p.abonado,ped:p._id,ref:p.ref}:null;
   ir('vender');
   decir(faltan.length?'Sin estampar todavía: '+faltan.join(' · '):
     'Carrito listo · cobra y después marca el pedido como entregado',
@@ -1332,11 +1370,16 @@ A.imprimirPedido=id=>{
         <div class="hsub">${esc(p.ref)} · pedido del ${fecha(p.f)}</div></div>
       <div style="text-align:right">
         ${p.entrega?`<div class="hfecha">ENTREGA<br><b>${fecha(p.entrega)}</b></div>`:''}
-        <div class="hsub">${und} camiseta${und===1?'':'s'}</div></div>
+        <div class="hsub">${und} camiseta${und===1?'':'s'}</div>
+        ${p.pago?`<div class="hpago">${p.pago==='PAGADO'?'YA PAGÓ':'CONTRA ENTREGA'}</div>`:''}</div>
     </div>
+    ${(()=>{const f=p.items.reduce((s,r)=>s+Math.max(0,r.cant-invT(r.k).cant),0);
+      return f?`<div class="hfalta">Falta estampar: <b>${f}</b> camiseta${f===1?'':'s'}</div>`
+        :'<div class="hnota">Todo listo en bodega · solo empacar y entregar</div>'})()}
     ${p.nota?`<div class="hnota">${esc(p.nota)}</div>`:''}
     <table class="htab">
       ${p.items.map(r=>{const [d,l,c,t]=r.k.split('|');
+        const hay=invT(r.k).cant, falta=Math.max(0,r.cant-hay);
         return `<tr>
           <td class="hchk">☐</td>
           <td class="hcant">${r.cant}</td>
@@ -1344,7 +1387,9 @@ A.imprimirPedido=id=>{
             <b>${usaDis(l)?esc(diseno(d).n):esc(linea(l).n)}</b>
             ${usaDis(l)?'<span class="hlin">'+esc(linea(l).n)+'</span>':''}
             <div class="hcol">${esc(color(c).n)} · Talla ${esc(talla(t).n)}</div>
-          </td></tr>`}).join('')}
+          </td>
+          <td class="hest">${falta?'<b>ESTAMPAR '+falta+'</b>':'ya en bodega'}</td>
+        </tr>`}).join('')}
     </table>
     <div class="hpie">${esc(S.empresa.nombre)} · impreso ${fecha(hoy())}</div>
   </div>`;
@@ -1591,8 +1636,9 @@ function vInventario(){
   const pegaCol=c=>pal.some(w=>nm(c.n).includes(w));
   const pegaTal=t=>pal.some(w=>nm('t'+t.n).includes(w)||nm(t.n).includes(w));
   const hayCol=q&&S.colores.some(pegaCol), hayTal=q&&S.tallas.some(pegaTal);
+  const fTal=tmp.fTal||'', fDis=tmp.fDis||'';
   const filCol=c=>!hayCol||pegaCol(c);
-  const filTal=t=>!hayTal||pegaTal(t);
+  const filTal=t=>(!hayTal||pegaTal(t))&&(!fTal||t.id===fTal);
   const filT=k=>!q||pal.every(w=>nm(nomT(k)).includes(w));
 
   const t=Object.entries(S.terminados).filter(([k,v])=>v.cant!==0&&filT(k));
@@ -1607,9 +1653,32 @@ function vInventario(){
       ${q?`<button class="b g chico" style="flex:0 0 auto"
         onclick="tmp.qInv='';pintar()">✕</button>`:''}
     </div>
-    ${q?`<div style="font-size:12px;color:var(--suave);margin-top:7px">
-      ${hayCol||hayTal?'Filtrando lisas':'Sin coincidencias en lisas'} ·
-      ${t.length} referencia${t.length===1?'':'s'} estampada${t.length===1?'':'s'}</div>`:''}
+    ${(()=>{
+      const gs={};
+      Object.entries(S.terminados).forEach(([k,v])=>{ if(v.cant<=0)return;
+        const p=k.split('|'), gk=(usaDis(p[1])?p[0]+'|':'')+p[1];
+        gs[gk]=(gs[gk]||0)+v.cant });
+      const nomG=x=>{const p=x.split('|');
+        return (p.length>1?diseno(p[0]).n+' · ':'')+linea(p.length>1?p[1]:p[0]).n};
+      const tals=S.tallas.filter(x=>
+        Object.keys(S.lisas).some(k=>k.split('|')[1]===x.id&&S.lisas[k].cant>0)||
+        Object.keys(S.terminados).some(k=>k.split('|')[3]===x.id&&S.terminados[k].cant>0));
+      const chip=(act,txt,acc)=>`<button onclick="${acc}"
+        style="flex:0 0 auto;border:1px solid ${act?'var(--tinta)':'var(--linea)'};
+        background:${act?'var(--tinta)':'#fff'};color:${act?'#fff':'var(--texto)'};
+        border-radius:999px;padding:6px 12px;font-size:12.5px;font-weight:600;cursor:pointer">
+        ${txt}</button>`;
+      return `
+      <div style="display:flex;gap:6px;overflow-x:auto;margin-top:9px;padding-bottom:4px">
+        ${chip(!tmp.fTal,'Todas las tallas',"tmp.fTal='';pintar()")}
+        ${tals.map(x=>chip(tmp.fTal===x.id,'T'+esc(x.n),`tmp.fTal='${x.id}';pintar()`)).join('')}
+      </div>
+      ${Object.keys(gs).length>1?`<div style="display:flex;gap:6px;overflow-x:auto;padding-bottom:4px">
+        ${chip(!tmp.fDis,'Todos los diseños',"tmp.fDis='';pintar()")}
+        ${Object.entries(gs).map(([k,n])=>chip(tmp.fDis===k,
+          esc(nomG(k))+' <span style="opacity:.6">'+n+'</span>',`tmp.fDis='${k}';pintar()`)).join('')}
+      </div>`:''}`;
+    })()}
   </div>
 
   <div class="card">
@@ -1689,33 +1758,45 @@ function vInventario(){
 
   <div class="card"><h3>Camisetas estampadas · listas para vender</h3>
     ${t.length?(()=>{
+      // Una cuadrícula por diseño y línea: colores en filas, tallas en columnas
       const g={};
       t.forEach(([k,v])=>{
         const p=k.split('|'), gk=(usaDis(p[1])?p[0]+'|':'')+p[1];
         (g[gk]=g[gk]||[]).push([k,v]);
       });
-      return Object.entries(g).map(([gk,filas])=>{
-        const p=gk.split('|'), lin=p.length>1?p[1]:p[0];
+      return Object.entries(g).filter(([gk])=>!fDis||gk===fDis).map(([gk,filas])=>{
+        const p=gk.split('|'), lin=p.length>1?p[1]:p[0], dis=p.length>1?p[0]:DGEN;
         const tit=(p.length>1?diseno(p[0]).n+' · ':'')+linea(lin).n;
         const tot=filas.reduce((s,[,v])=>s+v.cant,0);
-        return `<div style="margin-bottom:14px">
+        const kk=(c,ta)=>kT(dis,lin,c,ta);
+        const cols=S.colores.filter(c=>filCol(c)&&S.tallas.some(x=>filTal(x)&&invT(kk(c.id,x.id)).cant>0));
+        const tals=S.tallas.filter(x=>filTal(x)&&S.colores.some(c=>filCol(c)&&invT(kk(c.id,x.id)).cant>0));
+        if(!cols.length) return '';
+        const totC=cid=>tals.reduce((s,x)=>s+invT(kk(cid,x.id)).cant,0);
+        const totT=tid=>cols.reduce((s,c)=>s+invT(kk(c.id,tid)).cant,0);
+        return `<div style="margin-bottom:16px">
           <div style="display:flex;justify-content:space-between;align-items:baseline;
-            padding:0 0 6px;border-bottom:1px solid var(--linea)">
-            <b style="font-size:13.5px">${esc(tit)}</b>
+            padding:0 0 6px;border-bottom:2px solid var(--linea)">
+            <b style="font-size:14px">${esc(tit)}</b>
             <span style="font-size:12px;color:var(--suave)">${tot} und ·
-              vende a ${cop(linea(lin).precio)}</span></div>
-          ${filas.sort((a,b)=>nomT(a[0]).localeCompare(nomT(b[0]))).map(([k,v])=>{
-            const c=k.split('|')[2], ta=k.split('|')[3];
-            return `<div class="item" style="padding:7px 0">
-              <div><div class="t" style="font-size:14px">
-                <span class="punto" style="background:${color(c).hex}"></span>
-                ${esc(color(c).n)} · T${esc(talla(ta).n)}</div>
-                <div class="s">costo ${cop(v.valor/v.cant)}</div></div>
-              <div class="m"><span class="cifra">${v.cant}</span>
-                ${bajo(k)?'<div><span class="tag rojo">bajo</span></div>':''}</div>
-              ${admin()?`<button class="b g chico" style="min-height:30px;padding:0 9px;margin-left:8px"
-                onclick="A.ajustarInv('T','${k}')" title="Corregir cantidad">✎</button>`:''}</div>`}).join('')}
-        </div>`}).join('');
+              ${cop(linea(lin).precio)} c/u</span></div>
+          <div class="scroll"><table class="malla">
+            <tr><th>Color</th>${tals.map(x=>`<th class="n">${esc(x.n)}</th>`).join('')}
+              <th class="n">Total</th></tr>
+            ${cols.map(c=>`<tr>
+              <td style="white-space:nowrap"><span class="punto" style="background:${c.hex}"></span> ${esc(c.n)}</td>
+              ${tals.map(x=>{const k=kk(c.id,x.id), q=invT(k).cant;
+                if(!q) return '<td class="n"><span style="color:#e4e4e7">·</span></td>';
+                return `<td class="n">${admin()
+                  ?`<button class="celda" onclick="A.ajustarInv('T','${k}')"
+                     style="${bajo(k)?'color:var(--tinta)':''}">${q}</button>`
+                  :`<b style="${bajo(k)?'color:var(--tinta)':''}">${q}</b>`}</td>`}).join('')}
+              <td class="n"><b>${totC(c.id)}</b></td></tr>`).join('')}
+            <tr class="pie"><td>Total</td>
+              ${tals.map(x=>`<td class="n">${totT(x.id)}</td>`).join('')}
+              <td class="n">${tot}</td></tr>
+          </table></div>
+        </div>`}).join('')||'<div class="vacio">Nada con ese criterio.</div>';
     })()
       :'<div class="vacio">No hay camisetas estampadas. Registra una producción en Taller.</div>'}
   </div>
@@ -1922,6 +2003,9 @@ function vVender(){
       </div>
       <label>Nota de la venta (opcional)</label>
       <input id="vNota" placeholder="Pedido WhatsApp, entrega el viernes…" value="${esc(tmp.nota||'')}">
+      ${tmp.antic?`<div class="aviso ok" style="margin-bottom:10px">
+        Ya te había pagado <b>${cop(tmp.antic.monto)}</b> (${esc(tmp.antic.ref)}).
+        Esa plata ya está en la caja, no se cobra otra vez.</div>`:''}
       <label>Envío cobrado al cliente (opcional)</label>
       <input id="vEnvio" inputmode="numeric" placeholder="0"
         oninput="tmp.envio=+this.value.replace(/[^0-9]/g,'')||0;
@@ -1932,12 +2016,14 @@ function vVender(){
       <label>Entra el dinero a</label>
       <select id="vCuenta">${optCuenta()}</select>
       <div class="g2">
-        <div><label>Abono (si fía)</label><input id="vAbono" inputmode="numeric" placeholder="0"></div>
+        <div><label>${tmp.antic?'Paga hoy además':'Abono (si fía)'}</label>
+          <input id="vAbono" inputmode="numeric" placeholder="0"></div>
         <div><label>Pagar antes de</label><input type="date" id="vLimite"></div>
       </div>
       <div class="g2" style="margin-top:12px">
         <button class="b g" onclick="A.cobrar(true)">Dejar fiado</button>
-        <button class="b" onclick="A.cobrar(false)">Pago completo</button>
+        <button class="b" onclick="A.cobrar(false)">${
+          tmp.antic&&tmp.antic.monto>=total?'Ya está pagado · facturar':'Pago completo'}</button>
       </div>
       <button class="b g" style="margin-top:8px;background:none;border:0;color:var(--suave)"
         onclick="tmp.cobrando=false;pintar()">Volver al carrito</button>
@@ -2024,6 +2110,10 @@ function vPedidos(){
           <b style="font-size:15px">${esc(p.nom||cliente(p.cliente).n)}</b>
           <span class="tag ${p.estado==='ENTREGADO'?'verde':p.estado==='CANCELADO'?'':'rojo'}"
             style="margin-left:6px">${p.estado}</span>
+          ${p.pago==='PAGADO'?'<span class="tag verde" style="margin-left:4px">$ YA PAGÓ</span>':''}
+          ${p.pago==='CONTRA'?'<span class="tag" style="margin-left:4px">CONTRA ENTREGA</span>':''}
+          ${p.abonado>0?`<div style="font-size:12.5px;color:var(--ok);margin-top:2px">
+            Recibido por adelantado: <b>${cop(p.abonado)}</b></div>`:''}
           <div class="s" style="font-size:12px;color:var(--suave)">
             ${esc(p.ref)} · ${und} camiseta${und===1?'':'s'}
             ${p.entrega?' · entrega '+fecha(p.entrega):''}${tarde?' · <b style="color:var(--tinta)">atrasado</b>':''}</div>
@@ -2045,6 +2135,7 @@ function vPedidos(){
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:9px">
           ${!listo&&admin()?`<button class="b g chico" onclick="A.pedidoATaller('${p._id}')">Mandar a taller</button>`:''}
           ${listo?`<button class="b chico" style="width:auto" onclick="A.pedidoAVenta('${p._id}')">Cobrar</button>`:''}
+          <button class="b g chico" onclick="A.abonoPedido('${p._id}')">＄ Me pagó</button>
           <button class="b g chico" onclick="A.imprimirPedido('${p._id}')">🖨 Imprimir</button>
           <button class="b g chico" onclick="A.pedidoEstado('${p._id}','ENTREGADO')">Entregado</button>
           ${admin()?`<button class="b g chico" onclick="A.borrarPedido('${p._id}')">Cancelar</button>`:''}
@@ -2071,21 +2162,32 @@ function vPedidos(){
     </div>
     <div class="g2">
       <div><label>Entregar el</label><input type="date" id="qEntrega" value="${esc(tmp.qEnt||'')}"></div>
-      <div><label>Nota</label><input id="qNota" placeholder="Pagó por Nequi, pasa el viernes…"></div>
+      <div><label>Nota</label><input id="qNota" placeholder="Pasa el viernes, va por Servientrega…"></div>
     </div>
+    <label>¿Cómo queda el pago?</label>
+    <div style="display:flex;border:1px solid #ded9e4;border-radius:12px;overflow:hidden">
+      ${[['','Sin definir'],['PAGADO','Ya pagó'],['CONTRA','Contra entrega']].map(([v,n])=>
+        `<button class="b chico" style="flex:1;border-radius:0;width:auto;min-height:42px;
+          background:${(tmp.qPago||'')===v?'#18181b':'#fff'};
+          color:${(tmp.qPago||'')===v?'#fff':'var(--suave)'};box-shadow:none"
+          onclick="tmp.qPago='${v}';pintar()">${n}</button>`).join('')}
+    </div>
+    <div style="font-size:11.5px;color:var(--suave);margin-top:5px">
+      Es solo una marca para acordarte. La plata se registra cuando le des Cobrar.</div>
 
     <label>¿Qué encargó?</label>
     <div class="${usaDis(lSel)?'g2':''}">
       <select id="qLin" onchange="tmp.qLin=this.value;pintar()">${S.lineas.map(x=>
         `<option value="${x.id}"${lSel===x.id?' selected':''}>${esc(x.n)}</option>`).join('')}</select>
-      ${usaDis(lSel)?`<select id="qDis">${S.disenos.map(d=>
+      ${usaDis(lSel)?`<select id="qDis" onchange="pistaPedido()">${S.disenos.map(d=>
         `<option value="${d.id}">${esc(d.n)}</option>`).join('')}</select>`:''}
     </div>
     <div class="g3" style="margin-top:8px">
-      <select id="qCol">${optColor()}</select>
-      <select id="qTal">${optTalla()}</select>
-      <input id="qCant" inputmode="numeric" placeholder="Cant." value="1">
+      <select id="qCol" onchange="pistaPedido()">${optColor()}</select>
+      <select id="qTal" onchange="pistaPedido()">${optTalla()}</select>
+      <input id="qCant" inputmode="numeric" placeholder="Cant." value="1" oninput="pistaPedido()">
     </div>
+    <div id="qPista" style="font-size:12.5px;margin-top:7px"></div>
     <button class="b n chico" style="margin-top:8px" onclick="A.addPedidoFila()">Agregar al pedido</button>
 
     ${ped.length?`<div style="margin-top:12px">
@@ -2111,6 +2213,26 @@ function vPedidos(){
     ${cerrados.slice(0,15).map(tarjeta).join('')}
   </div>`:''}`;
 }
+
+/* Muestra, mientras armas el pedido, qué tienes de esa referencia */
+function pistaPedido(){
+  const e=document.getElementById('qPista'); if(!e)return;
+  const l=val('qLin'), d=usaDis(l)?val('qDis'):DGEN;
+  const c=val('qCol'), t=val('qTal'), q=nval('qCant')||1;
+  if(!l||!c||!t){ e.innerHTML=''; return }
+  const hechas=invT(kT(d,l,c,t)).cant, lisas=invL(kL(c,t)).cant;
+  if(hechas>=q){
+    e.innerHTML=`<span style="color:var(--ok)">✓ Ya tienes ${hechas} estampada${
+      hechas===1?'':'s'} de esa</span>`;
+  }else{
+    const falta=q-hechas;
+    e.innerHTML=`<span style="color:var(--tinta)">Hay ${hechas} estampada${hechas===1?'':'s'} ·
+      habría que estampar ${falta}</span> <span style="color:var(--suave)">·
+      lisas ${esc(color(c).n)} T${esc(talla(t).n)}: <b>${lisas}</b>${
+      lisas<falta?' (no alcanzan)':''}</span>`;
+  }
+}
+window.pistaPedido=pistaPedido;
 
 /* ── Facturas ───────────────────────────────────────────── */
 function vFacturas(){
@@ -2439,6 +2561,7 @@ function pintar(){
     pedidos:vPedidos}[tab];
   $('vista').innerHTML=cuerpo();
   pintarMsg();
+  if(document.getElementById('qPista')) pistaPedido();
 }
 
 /* ═══════════ ENTRAR ═════════════════════════════════════ */
