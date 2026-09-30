@@ -464,18 +464,23 @@ A.addProdFila=()=>{
   if(usaDis(lId)&&!dis) return decir('Elige el diseño. Créalo en Ajustes si no está','err');
   if(!t) return decir('Escoge la talla','err');
   tmp.prod=tmp.prod||[];
-  let metidas=0, falta='';
+  // Primero se revisa todo; si algo no alcanza, no se agrega nada
+  const pedir=[], faltan=[];
   S.colores.forEach(c=>{
     const q=nval('pq_'+c.id); if(q<=0) return;
-    const k=kL(c.id,t);
-    const libres=invL(k).cant-usadasProd(k);
-    if(q>libres){ falta=falta||('Solo quedan '+libres+' lisas de '+nomL(k)); return }
+    const k=kL(c.id,t), libres=invL(k).cant-usadasProd(k);
+    if(q>libres) faltan.push(esc(c.n)+': pides '+q+' y solo hay '+libres);
+    else pedir.push({k,q});
+  });
+  if(faltan.length) return decir('No alcanzan las lisas · '+faltan.join(' · ')+
+    ' · No se agregó nada','err');
+  if(!pedir.length) return decir('Escribe la cantidad en al menos un color','err');
+  let metidas=0;
+  pedir.forEach(({k,q})=>{
     const ya=tmp.prod.find(r=>r.k===k&&r.dis===dis);
     if(ya) ya.cant+=q; else tmp.prod.push({k,cant:q,merma:0,dis});
     metidas+=q;
   });
-  if(falta) return decir(falta,'err');
-  if(!metidas) return decir('Escribe la cantidad en al menos un color','err');
   S.colores.forEach(c=>{ const e=$('pq_'+c.id); if(e) e.value='' });
   decir(num(metidas)+' lisas talla '+esc(talla(t).n)+' agregadas');
 };
@@ -543,17 +548,32 @@ A.addApertura=tipo=>{
     S.colores.forEach(c=>{ const e=$('aq_'+c.id); if(e) e.value='' });
     decir(num(metidas)+' lisas talla '+esc(talla(t).n)+' agregadas');
   }else{
-    const l=val('bLin'),d=usaDis(l)?val('bDis'):DGEN,c=val('bCol'),t=val('bTal'),q=nval('bCant'),cu=nval('bCosto');
+    const l=val('bLin'), d=usaDis(l)?val('bDis'):DGEN, t=val('bTal'), cu=nval('bCosto');
     if(usaDis(l)&&!d) return decir('Primero crea el diseño en Ajustes','err');
-    if(q<=0||cu<=0) return decir('Completa cantidad y costo','err');
-    tmp.apertura.T.push({k:kT(d,l,c,t),cant:q,cu});
+    if(!t||cu<=0) return decir('Escoge la talla y escribe el costo','err');
+    let metidas=0;
+    S.colores.forEach(c=>{
+      const q=nval('bq_'+c.id); if(q<=0) return;
+      const k=kT(d,l,c.id,t);
+      const ya=tmp.apertura.T.find(r=>r.k===k&&r.cu===cu);
+      if(ya) ya.cant+=q; else tmp.apertura.T.push({k,cant:q,cu});
+      metidas+=q;
+    });
+    if(!metidas) return decir('Escribe la cantidad en al menos un color','err');
+    S.colores.forEach(c=>{ const e=$('bq_'+c.id); if(e) e.value='' });
+    decir(num(metidas)+' estampadas talla '+esc(talla(t).n)+' agregadas');
   }
   pintar();
 };
 A.delApertura=(tipo,i)=>{tmp.apertura[tipo].splice(i,1);pintar()};
 A.sugerirCosto=()=>{
-  const base=costoL(kL(val('bCol'),val('bTal')));
-  if(!base) return decir('Todavía no hay costo de lisas para ese color y talla. Escríbelo a mano.','err');
+  const t=val('bTal');
+  // Usa el primer color con cantidad escrita; si no hay, el primero con lisas en esa talla
+  const conQ=S.colores.find(c=>nval('bq_'+c.id)>0);
+  const conL=S.colores.find(c=>costoL(kL(c.id,t))>0);
+  const c=conQ||conL;
+  const base=c?costoL(kL(c.id,t)):0;
+  if(!base) return decir('Todavía no hay costo de lisas en esa talla. Escríbelo a mano.','err');
   $('bCosto').value=Math.round(base+(linea(val('bLin')).estampado||0));
 };
 A.guardarApertura=()=>{
@@ -1474,18 +1494,25 @@ function vInventario(){
             `<option value="${x.id}"${(tmp.bLin||S.lineas[0].id)===x.id?' selected':''}>${esc(x.n)}</option>`).join('')}</select>
           ${usaDis(tmp.bLin||S.lineas[0].id)?`<select id="bDis">${S.disenos.map(d=>`<option value="${d.id}">${esc(d.n)}</option>`).join('')}</select>`:''}
         </div>
-        <div class="g3" style="margin-top:8px">
-          <select id="bCol">${optColor()}</select>
-          <select id="bTal">${optTalla()}</select>
-          <input id="bCant" inputmode="numeric" placeholder="Cant.">
+        <div class="g2" style="margin-top:8px">
+          <select id="bTal" onchange="tmp.bTal=this.value;pintar()">${optTalla(tmp.bTal)}</select>
+          <div class="fila">
+            <input id="bCosto" inputmode="numeric" placeholder="Costo real c/u">
+            <button class="b g chico" style="flex:0 0 auto" onclick="A.sugerirCosto()">Sugerir</button>
+          </div>
         </div>
-        <div class="fila" style="margin-top:8px">
-          <input id="bCosto" inputmode="numeric" placeholder="Costo real c/u">
-          <button class="b g chico" style="flex:0 0 auto" onclick="A.sugerirCosto()">Sugerir</button>
-          <button class="b n chico" style="flex:0 0 auto" onclick="A.addApertura('T')">Agregar</button>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));
+          gap:8px;margin-top:10px">
+          ${S.colores.map(c=>`<label class="swatch">
+            <span class="sw-cara" style="background:${c.hex}"></span>
+            <span class="sw-nom">${esc(c.n)}</span>
+            <input id="bq_${c.id}" inputmode="numeric" placeholder="0"></label>`).join('')}
         </div>
+        <button class="b n chico" style="margin-top:10px" onclick="A.addApertura('T')">
+          Agregar esta talla</button>
         <div style="font-size:11.5px;color:var(--suave);margin-top:5px">
-          El costo es la lisa más el transfer y la mano de obra. "Sugerir" lo calcula si ya cargaste esa lisa arriba.</div>
+          El costo es la lisa más el transfer y la mano de obra, no el precio de venta.
+          "Sugerir" lo calcula si ya cargaste esa lisa arriba.</div>
         ${ap.T.map((r,i)=>`<div class="item">
           <div><div class="t">${esc(nomT(r.k))}</div><div class="s cifra">${r.cant} × ${cop(r.cu)}</div></div>
           <div class="m"><button class="b g chico" style="min-height:30px" onclick="A.delApertura('T',${i})">✕</button></div>
