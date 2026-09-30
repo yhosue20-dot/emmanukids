@@ -455,23 +455,39 @@ A.guardarCompra=()=>{
 };
 
 /* --- Producción --- */
+/* Lisas de esa referencia ya comprometidas en la tanda */
+const usadasProd=k=>(tmp.prod||[]).filter(r=>r.k===k).reduce((s,r)=>s+r.cant,0);
 A.addProdFila=()=>{
-  const c=val('pCol'), t=val('pTal'), q=nval('pCant'), m=nval('pMerma');
-  if(!c||!t||q<=0) return decir('Indica color, talla y cantidad','err');
-  if(m>q) return decir('La merma no puede ser mayor que la cantidad','err');
-  const k=kL(c,t);
+  const t=val('pTal');
   const lId=tmp.lin||S.lineas[0].id;
   const dis=usaDis(lId)?val('pDis'):DGEN;
   if(usaDis(lId)&&!dis) return decir('Elige el diseño. Créalo en Ajustes si no está','err');
-  // Las lisas ya comprometidas en otras filas no se pueden usar dos veces
-  const usadas=(tmp.prod||[]).filter(r=>r.k===k).reduce((s,r)=>s+r.cant,0);
-  if(invL(k).cant<usadas+q) return decir('Solo quedan '+(invL(k).cant-usadas)+
-    ' lisas libres de '+nomL(k),'err');
+  if(!t) return decir('Escoge la talla','err');
   tmp.prod=tmp.prod||[];
-  tmp.prod.push({k,cant:q,merma:m,dis});
-  $('pCant').value=''; $('pMerma').value='0'; pintar();
+  let metidas=0, falta='';
+  S.colores.forEach(c=>{
+    const q=nval('pq_'+c.id); if(q<=0) return;
+    const k=kL(c.id,t);
+    const libres=invL(k).cant-usadasProd(k);
+    if(q>libres){ falta=falta||('Solo quedan '+libres+' lisas de '+nomL(k)); return }
+    const ya=tmp.prod.find(r=>r.k===k&&r.dis===dis);
+    if(ya) ya.cant+=q; else tmp.prod.push({k,cant:q,merma:0,dis});
+    metidas+=q;
+  });
+  if(falta) return decir(falta,'err');
+  if(!metidas) return decir('Escribe la cantidad en al menos un color','err');
+  S.colores.forEach(c=>{ const e=$('pq_'+c.id); if(e) e.value='' });
+  decir(num(metidas)+' lisas talla '+esc(talla(t).n)+' agregadas');
 };
 A.delProdFila=i=>{tmp.prod.splice(i,1);pintar()};
+A.prodMerma=i=>{
+  const r=tmp.prod[i]; if(!r)return;
+  const v=prompt('¿Cuántas salieron dañadas?\n'+nomL(r.k)+' · '+r.cant+' en la tanda',r.merma||0);
+  if(v===null) return;
+  const m=Math.max(0,+String(v).replace(/[^\d]/g,'')||0);
+  if(m>r.cant) return decir('No pueden ser más que las que entraron','err');
+  r.merma=m; pintar();
+};
 A.guardarProd=()=>{
   const filas=tmp.prod||[];
   if(!filas.length) return decir('Agrega qué camisetas vas a estampar','err');
@@ -1306,24 +1322,36 @@ function vTaller(){
     <label>¿Qué camisetas lisas vas a usar?</label>
     ${usaDis(tmp.lin||S.lineas[0].id)?`<select id="pDis" style="margin-bottom:8px">${
       S.disenos.map(d=>`<option value="${d.id}">${esc(d.n)}</option>`).join('')}</select>`:''}
-    <div class="g3">
-      <select id="pCol">${optColor()}</select>
-      <select id="pTal">${optTalla()}</select>
-      <input id="pCant" inputmode="numeric" placeholder="Cant.">
-    </div>
-    ${usaDis(tmp.lin||S.lineas[0].id)?`<div style="font-size:11.5px;color:var(--suave);margin-top:5px">
-      Cambia el diseño antes de cada <b>Agregar</b> si las camisetas llevan estampados distintos.</div>`:''}
-    <div class="fila" style="margin-top:8px">
-      <input id="pMerma" inputmode="numeric" placeholder="Dañadas" value="0">
-      <button class="b n chico" style="flex:0 0 auto" onclick="A.addProdFila()">Agregar</button>
-    </div>
+    <select id="pTal" onchange="tmp.pTal=this.value;pintar()">${optTalla(tmp.pTal)}</select>
+    <div style="font-size:11.5px;color:var(--suave);margin:6px 0 0">
+      Llena solo los colores que vas a estampar. El número gris es cuántas lisas hay.${
+      usaDis(tmp.lin||S.lineas[0].id)?' Cambia el diseño antes de agregar si llevan estampados distintos.':''}</div>
+    ${(()=>{
+      const tSel=tmp.pTal||S.tallas[0].id;
+      const disp=S.colores.filter(c=>invL(kL(c.id,tSel)).cant-usadasProd(kL(c.id,tSel))>0);
+      if(!disp.length) return `<div class="aviso err" style="margin-top:10px">
+        No hay lisas disponibles en la talla ${esc(talla(tSel).n)}.</div>`;
+      return `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));
+        gap:8px;margin-top:10px">
+        ${disp.map(c=>{const libres=invL(kL(c.id,tSel)).cant-usadasProd(kL(c.id,tSel));
+          return `<label class="swatch">
+            <span class="sw-cara" style="background:${c.hex}"></span>
+            <span class="sw-nom">${esc(c.n)} <b style="color:var(--suave)">${libres}</b></span>
+            <input id="pq_${c.id}" inputmode="numeric" placeholder="0"></label>`}).join('')}
+      </div>`;
+    })()}
+    <button class="b n chico" style="margin-top:10px" onclick="A.addProdFila()">
+      Agregar esta talla</button>
 
     ${filas.length?`<div style="margin-top:14px">
       ${filas.map((r,i)=>`<div class="item">
         <div><div class="t">${usaDis(tmp.lin||S.lineas[0].id)?
           `<span class="tag" style="margin-right:5px">${esc(diseno(r.dis).n)}</span>`:''}${esc(nomL(r.k))}</div>
-          <div class="s">${r.cant} usadas${r.merma?' · '+r.merma+' dañadas':''} · lisa a ${cop(costoL(r.k))}</div></div>
-        <div class="m"><button class="b g chico" style="min-height:30px" onclick="A.delProdFila(${i})">✕</button></div>
+          <div class="s">${r.cant} usadas${r.merma?' · <b style="color:var(--tinta)">'+r.merma+' dañadas</b>':''} · lisa a ${cop(costoL(r.k))}</div></div>
+        <div class="m" style="display:flex;gap:5px">
+          <button class="b g chico" style="min-height:30px;padding:0 9px"
+            onclick="A.prodMerma(${i})" title="Marcar dañadas">⚠</button>
+          <button class="b g chico" style="min-height:30px" onclick="A.delProdFila(${i})">✕</button></div>
       </div>`).join('')}</div>`:'<div class="vacio">Agrega qué lisas entran al estampado.</div>'}
 
     <div class="g2">
