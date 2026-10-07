@@ -387,6 +387,9 @@ async function correr(fn,extras,ok){
 /* ── Búsquedas ──────────────────────────────────────────── */
 const color=i=>S.colores.find(x=>x.id===i)||{n:'?',hex:'#ccc'};
 const talla=i=>S.tallas.find(x=>x.id===i)||{n:'?'};
+/* Las tallas se muestran de menor a mayor aunque se hayan creado desordenadas */
+const tallasOrd=()=>S.tallas.slice().sort((a,b)=>
+  (parseInt(a.n,10)||999)-(parseInt(b.n,10)||999)||String(a.n).localeCompare(String(b.n)));
 const diseno=i=>S.disenos.find(x=>x.id===i)||{n:'General'};
 const linea=i=>S.lineas.find(x=>x.id===i)||S.lineas[0];
 const cliente=i=>S.clientes.find(x=>x.id===i)||{n:'Consumidor final'};
@@ -1418,7 +1421,7 @@ const TABS=[
 function ir(k){tab=k;msg=null;window.scrollTo(0,0);pintar()}
 
 const optColor=v=>S.colores.map(c=>`<option value="${c.id}"${c.id===v?' selected':''}>${esc(c.n)}</option>`).join('');
-const optTalla=v=>S.tallas.map(t=>`<option value="${t.id}"${t.id===v?' selected':''}>Talla ${esc(t.n)}</option>`).join('');
+const optTalla=v=>tallasOrd().map(t=>`<option value="${t.id}"${t.id===v?' selected':''}>Talla ${esc(t.n)}</option>`).join('');
 const optCuenta=()=>S.cuentas.map(q=>`<option value="${q.id}">${esc(q.n)}</option>`).join('');
 
 /* ── Inicio ─────────────────────────────────────────────── */
@@ -1561,7 +1564,7 @@ function vTaller(){
       Llena solo los colores que vas a estampar. El número gris es cuántas lisas hay.${
       usaDis(tmp.lin||S.lineas[0].id)?' Cambia el diseño antes de agregar si llevan estampados distintos.':''}</div>
     ${(()=>{
-      const tSel=tmp.pTal||S.tallas[0].id;
+      const tSel=tmp.pTal||tallasOrd()[0].id;
       const disp=S.colores.filter(c=>invL(kL(c.id,tSel)).cant-usadasProd(kL(c.id,tSel))>0);
       if(!disp.length) return `<div class="aviso err" style="margin-top:10px">
         No hay lisas disponibles en la talla ${esc(talla(tSel).n)}.</div>`;
@@ -1670,7 +1673,7 @@ function vInventario(){
         gs[gk]=(gs[gk]||0)+v.cant });
       const nomG=x=>{const p=x.split('|');
         return (p.length>1?diseno(p[0]).n+' · ':'')+linea(p.length>1?p[1]:p[0]).n};
-      const tals=S.tallas.filter(x=>
+      const tals=tallasOrd().filter(x=>
         Object.keys(S.lisas).some(k=>k.split('|')[1]===x.id&&S.lisas[k].cant>0)||
         Object.keys(S.terminados).some(k=>k.split('|')[3]===x.id&&S.terminados[k].cant>0));
       const chip=(act,txt,acc)=>`<button onclick="${acc}"
@@ -1780,7 +1783,7 @@ function vInventario(){
         const tot=filas.reduce((s,[,v])=>s+v.cant,0);
         const kk=(c,ta)=>kT(dis,lin,c,ta);
         const cols=S.colores.filter(c=>filCol(c)&&S.tallas.some(x=>filTal(x)&&invT(kk(c.id,x.id)).cant>0));
-        const tals=S.tallas.filter(x=>filTal(x)&&S.colores.some(c=>filCol(c)&&invT(kk(c.id,x.id)).cant>0));
+        const tals=tallasOrd().filter(x=>filTal(x)&&S.colores.some(c=>filCol(c)&&invT(kk(c.id,x.id)).cant>0));
         if(!cols.length) return '';
         const totC=cid=>tals.reduce((s,x)=>s+invT(kk(cid,x.id)).cant,0);
         const totT=tid=>cols.reduce((s,c)=>s+invT(kk(c.id,tid)).cant,0);
@@ -1816,7 +1819,7 @@ function vInventario(){
       // Tabla: una fila por color, una columna por talla. Solo salen los
       // colores y las tallas que de verdad tienen camisetas.
       const cols=S.colores.filter(c=>filCol(c)&&S.tallas.some(t=>filTal(t)&&invL(kL(c.id,t.id)).cant>0));
-      const tals=S.tallas.filter(t=>filTal(t)&&S.colores.some(c=>filCol(c)&&invL(kL(c.id,t.id)).cant>0));
+      const tals=tallasOrd().filter(t=>filTal(t)&&S.colores.some(c=>filCol(c)&&invL(kL(c.id,t.id)).cant>0));
       if(!cols.length) return '<div class="vacio">Nada con ese criterio.</div>';
       const totT=tid=>cols.reduce((s,c)=>s+invL(kL(c.id,tid)).cant,0);
       const totC=cid=>tals.reduce((s,t)=>s+invL(kL(cid,t.id)).cant,0);
@@ -2094,7 +2097,7 @@ function parrilla(){
 
   const enCarrito=k=>((tmp.carrito||[]).find(c=>c.id===k)||{}).cant||0;
   const cols=S.colores.filter(c=>S.tallas.some(t=>invT(kT(gd,gl,c.id,t.id)).cant>0));
-  const tals=S.tallas.filter(t=>S.colores.some(c=>invT(kT(gd,gl,c.id,t.id)).cant>0));
+  const tals=tallasOrd().filter(t=>S.colores.some(c=>invT(kT(gd,gl,c.id,t.id)).cant>0));
 
   return `
   <div style="display:flex;gap:6px;overflow-x:auto;padding-bottom:8px;margin-bottom:4px">
