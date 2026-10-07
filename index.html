@@ -121,8 +121,12 @@ table.malla tr.pie td{border-top:2px solid var(--linea);font-weight:700;color:va
 .celda{border:0;background:none;font:inherit;font-weight:700;color:var(--texto);
   padding:3px 7px;border-radius:7px;cursor:pointer;font-variant-numeric:tabular-nums}
 .celda:hover{background:var(--tinta-bg);color:var(--tinta)}
+td.c0{background:#fef2f2}
+td.c0 .celda,td.c0 b{color:#dc2626}
+td.cbajo{background:#fffbeb}
+td.cbajo .celda,td.cbajo b{color:#b45309}
 .barra{position:fixed;left:0;right:0;bottom:calc(58px + env(safe-area-inset-bottom));background:#fff;
-  border-top:1px solid var(--linea);padding:13px 14px;z-index:19;max-height:66vh;overflow-y:auto;
+  border-top:1px solid var(--linea);padding:13px 14px;z-index:19;max-height:52vh;overflow-y:auto;
   box-shadow:0 -10px 34px rgba(28,23,32,.13);border-radius:20px 20px 0 0;
   animation:sube .26s cubic-bezier(.34,1.3,.64,1) both}
 .modal{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:40;display:flex;align-items:flex-end}
@@ -433,7 +437,7 @@ function precioPor(lineaId,cant,tipoVenta){
   if(tipoVenta!=='MAYOR') return L.precio;
   const r=(L.rangos||[]).filter(r=>cant>=r.min&&(r.max==null||cant<=r.max))
     .sort((a,b)=>b.min-a.min)[0];
-  return r?r.p:L.precio;
+  return (r&&r.p>0)?r.p:L.precio;   // si el rango quedó vacío, cobra el de detal
 }
 
 /* ═══════════ ACCIONES ═══════════════════════════════════ */
@@ -675,6 +679,7 @@ A.agregar=k=>{
   const ex=tmp.carrito.find(x=>x.id===k);
   if(ex){ if(ex.cant>=invT(k).cant) return decir('Solo quedan '+invT(k).cant+' unidades','err'); ex.cant++ }
   else tmp.carrito.push({id:k,k,cant:1});
+  if(tmp.carAbierto===undefined) tmp.carAbierto=false;
   pintar();
 };
 /* Estampar al momento: sale de lisas, se estampa y se vende en la misma venta */
@@ -1319,9 +1324,9 @@ A.guardarPrecios=()=>{
     L.precio=nval('lp'+i); L.estampado=nval('le'+i); L.margenMin=nval('lm'+i);
     L.usaDis=!!($('ld'+i)||{}).checked;
     L.rangos=[
-      {min:1,max:5,p:nval('r'+i+'a')},
-      {min:6,max:20,p:nval('r'+i+'b')},
-      {min:21,max:null,p:nval('r'+i+'c')}];
+      {min:1,max:5,p:nval('r'+i+'a')||L.precio},
+      {min:6,max:20,p:nval('r'+i+'b')||L.precio},
+      {min:21,max:null,p:nval('r'+i+'c')||L.precio}];
     L.pack={und:nval('pu'+i)||3,precio:nval('pp'+i)||L.precio*3};
   });
   S.stockMin=nval('stockMin')||5;
@@ -1818,9 +1823,10 @@ function vInventario(){
         ${cols.map(c=>`<tr>
           <td style="white-space:nowrap"><span class="punto" style="background:${c.hex}"></span> ${esc(c.n)}</td>
           ${tals.map(t=>{const k=kL(c.id,t.id), q=invL(k).cant;
-            return `<td class="n">${q>0?(admin()
+            const cl=q===0?'c0':(q<=S.stockMin?'cbajo':'');
+            return `<td class="n ${cl}">${admin()
               ?`<button class="celda" onclick="A.ajustarInv('L','${k}')">${q}</button>`
-              :`<b>${q}</b>`):'<span style="color:#d4d4d8">·</span>'}</td>`}).join('')}
+              :`<b>${q}</b>`}</td>`}).join('')}
           <td class="n"><b>${totC(c.id)}</b></td></tr>`).join('')}
         <tr class="pie"><td>Total</td>
           ${tals.map(t=>`<td class="n">${totT(t.id)}</td>`).join('')}
@@ -1828,7 +1834,25 @@ function vInventario(){
       </table></div>
       <div style="font-size:11.5px;color:var(--suave);margin-top:8px">
         ${admin()?'Toca una cantidad para corregirla. ':''}Valor en bodega:
-        <b>${cop(granVal)}</b></div>`;
+        <b>${cop(granVal)}</b> ·
+        <span style="color:#dc2626">■</span> agotado
+        <span style="color:#b45309;margin-left:6px">■</span> ${S.stockMin} o menos</div>
+      ${(()=>{
+        const cero=[], bajo=[];
+        cols.forEach(c=>tals.forEach(t=>{
+          const q=invL(kL(c.id,t.id)).cant;
+          const txt=c.n+' T'+t.n;
+          if(q===0) cero.push(txt); else if(q<=S.stockMin) bajo.push(txt+' ('+q+')');
+        }));
+        if(!cero.length&&!bajo.length) return '';
+        return `<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--linea)">
+          <b style="font-size:12.5px">Para el próximo pedido de lisas</b>
+          ${cero.length?`<div style="font-size:12.5px;margin-top:6px">
+            <span style="color:#dc2626;font-weight:700">Agotadas:</span> ${esc(cero.join(' · '))}</div>`:''}
+          ${bajo.length?`<div style="font-size:12.5px;margin-top:4px">
+            <span style="color:#b45309;font-weight:700">Quedan pocas:</span> ${esc(bajo.join(' · '))}</div>`:''}
+        </div>`;
+      })()}`;
     })()
       :'<div class="vacio">No hay lisas. Registra una compra.</div>'}
   </div>
@@ -1937,8 +1961,10 @@ function vVender(){
       style="border:0;background:none;color:var(--suave);font-size:12px;cursor:pointer">
       ${tmp.parrilla===false?'▦ Ver como parrilla':'▤ Ver como tarjetas'}</button>
   </div>
-  <div id="listaProd" style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-    ${lista.length?lista.map(([k,v])=>{
+  <div id="listaProd" style="display:grid;grid-template-columns:1fr 1fr;gap:10px;
+    padding-bottom:${ls.length?(tmp.carAbierto?'56vh':'150px'):'0'}">
+    ${(!tmp.busq&&tmp.parrilla!==false)?`<div style="grid-column:1/-1">${parrilla()}</div>`
+      :(lista.length?lista.map(([k,v])=>{
       const [,lin,c,t]=k.split('|'), [d]=k.split('|');
       return `<button class="prod" onclick="A.agregar('${k}')">
         <div><span class="punto" style="background:${color(c).hex}"></span>
@@ -1949,10 +1975,11 @@ function vVender(){
           <b class="cifra">${cop(precioPor(lin,1,tv))}</b>
           <span class="cifra" style="font-size:12px;color:var(--suave)">${v.cant} und</span></div>
       </button>`}).join('')
-      :'<div class="vacio" style="grid-column:1/-1">No hay camisetas disponibles con ese criterio.</div>'}
+      :'<div class="vacio" style="grid-column:1/-1">No hay camisetas disponibles con ese criterio.</div>')}
   </div>
 
   ${ls.length?`<div class="barra">
+    <div id="carLineas" style="${tmp.carAbierto?'':'display:none'}">
     ${ls.map(l=>`<div class="item">
       <div style="flex:1;min-width:0">
         <div class="t" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${
@@ -1982,10 +2009,17 @@ function vVender(){
         </div>`).join('')}
     </div>`:''}
 
-    <div class="item" style="border-top:1px solid var(--linea);border-bottom:0">
-      <div><div class="t">${unid} unidades
+    </div>
+    <div class="item" style="border-top:${tmp.carAbierto?'1px solid var(--linea)':'0'};border-bottom:0">
+      <div><div class="t">
+        <button onclick="tmp.carAbierto=!tmp.carAbierto;pintar()"
+          style="border:0;background:none;padding:0;font:inherit;font-weight:700;cursor:pointer;
+          color:var(--texto)">${tmp.carAbierto?'▾':'▸'} ${unid} unidad${unid===1?'':'es'}</button>
         <button onclick="A.vaciar()" style="border:0;background:none;padding:0 0 0 8px;
           color:var(--suave);font-size:12.5px;cursor:pointer">Vaciar ✕</button></div>
+        ${!tmp.carAbierto?`<div style="font-size:12px;color:var(--suave);
+          white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:60vw">${
+          esc(ls.map(l=>l.cant+'× '+nomT(l.k)).join(' · '))}</div>`:''}
         <button onclick="A.totalCombo()" style="border:0;background:none;padding:2px 0;
           color:${tmp.totalMan>0?'var(--tinta)':'var(--suave)'};font-size:12.5px;cursor:pointer">
           ${tmp.totalMan>0?'Precio de combo fijado ✎':'Poner precio al combo ✎'}</button>
@@ -2376,6 +2410,48 @@ function vReportes(){
     q.u+=x.cant; q.v+=x.neto; q.c+=x.costo;
   }));
 
+  /* ── Análisis: qué se vende más ──────────────────────────
+     El filtro de línea deja ver, por ejemplo, solo las Premium. */
+  const lFil=tmp.rLin||'';
+  const acum=(campo)=>{
+    const m={};
+    fs.forEach(f=>f.det.forEach(x=>{
+      const p=x.k.split('|');
+      if(lFil&&p[1]!==lFil) return;
+      const key=campo==='c'?p[2]:campo==='t'?p[3]:campo==='d'?p[0]:p[1];
+      const a=m[key]||(m[key]={u:0,v:0,c:0});
+      a.u+=x.cant; a.v+=x.neto; a.c+=x.costo;
+    }));
+    return Object.entries(m).sort((a,b)=>b[1].u-a[1].u);
+  };
+  const porTipo={};
+  fs.forEach(f=>{
+    const k=f.tipo||'DETAL';
+    const a=porTipo[k]||(porTipo[k]={n:0,u:0,v:0,c:0});
+    a.n++; a.u+=f.det.reduce((s,x)=>s+x.cant,0); a.v+=f.total; a.c+=f.costo;
+  });
+  const undTot=fs.reduce((s,f)=>s+f.det.reduce((x,d)=>x+d.cant,0),0);
+
+  const rank=(titulo,datos,nombre)=>{
+    const max=datos.length?datos[0][1].u:0;
+    return `<div class="card"><h3>${titulo}</h3>
+      ${datos.length?datos.slice(0,12).map(([k,x],i)=>`
+        <div style="padding:7px 0;border-bottom:1px solid #f4f4f5">
+          <div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline">
+            <div style="font-size:14px;font-weight:${i<3?'700':'500'}">
+              <span style="color:var(--suave);font-size:12px">${i+1}.</span> ${nombre(k)}</div>
+            <div style="white-space:nowrap;font-size:13px">
+              <b class="cifra">${x.u}</b> <span style="color:var(--suave);font-size:11.5px">und</span>
+              <span class="cifra" style="color:var(--suave);margin-left:7px">${cop(x.v)}</span></div>
+          </div>
+          <div style="height:5px;background:#f2eff5;border-radius:9px;margin-top:5px;overflow:hidden">
+            <div style="height:100%;width:${max?Math.round(x.u/max*100):0}%;
+              background:${i===0?'var(--tinta)':i<3?'#e879b0':'#dcd6e2'}"></div></div>
+        </div>`).join('')
+        :'<div class="vacio">Sin ventas en el periodo</div>'}
+    </div>`;
+  };
+
   return `
   <div class="card"><h3>Periodo</h3>
     <div class="g2">
@@ -2403,6 +2479,44 @@ function vReportes(){
         <td class="n">${x.v?((x.v-x.c)/x.v*100).toFixed(0):0}%</td></tr>`).join('')
         ||'<tr><td colspan="5" style="color:#999">Sin ventas en el periodo</td></tr>'}
     </table></div>
+  </div>
+
+  <div class="card"><h3>¿Qué se vende más?</h3>
+    <div style="display:flex;gap:6px;overflow-x:auto;padding-bottom:4px">
+      ${[['','Todo']].concat(S.lineas.map(l=>[l.id,l.n])).map(([v,n])=>`
+        <button onclick="tmp.rLin='${v}';pintar()"
+          style="flex:0 0 auto;border:1px solid ${lFil===v?'var(--tinta)':'var(--linea)'};
+          background:${lFil===v?'var(--tinta)':'#fff'};color:${lFil===v?'#fff':'var(--texto)'};
+          border-radius:999px;padding:7px 14px;font-size:13px;font-weight:700;cursor:pointer">
+          ${esc(n)}</button>`).join('')}
+    </div>
+    <div style="font-size:12px;color:var(--suave);margin-top:8px">
+      ${lFil?'Viendo solo '+esc(linea(lFil).n):'Viendo todas las líneas'} ·
+      ${undTot} camisetas vendidas en el periodo</div>
+  </div>
+
+  ${rank('Colores más vendidos',acum('c'),k=>
+    `<span class="punto" style="background:${color(k).hex}"></span> ${esc(color(k).n)}`)}
+
+  ${rank('Tallas más vendidas',acum('t'),k=>'Talla '+esc(talla(k).n))}
+
+  ${S.disenos.length?rank('Diseños más vendidos',acum('d'),k=>esc(diseno(k).n)):''}
+
+  <div class="card"><h3>¿Cómo vendes más?</h3>
+    <div class="scroll"><table>
+      <tr><th>Modo</th><th class="n">Facturas</th><th class="n">Und</th>
+        <th class="n">Venta</th><th class="n">% del total</th><th class="n">Margen</th></tr>
+      ${Object.entries(porTipo).sort((a,b)=>b[1].v-a[1].v).map(([k,x])=>`<tr>
+        <td><b>${k==='DETAL'?'Detal':k==='MAYOR'?'Por mayor':'Pack x3'}</b></td>
+        <td class="n">${x.n}</td><td class="n">${x.u}</td>
+        <td class="n">${cop(x.v)}</td>
+        <td class="n">${venta?(x.v/venta*100).toFixed(0):0}%</td>
+        <td class="n">${x.v?((x.v-x.c)/x.v*100).toFixed(0):0}%</td></tr>`).join('')
+        ||'<tr><td colspan="6" style="color:#999">Sin ventas en el periodo</td></tr>'}
+    </table></div>
+    <div style="font-size:12px;color:var(--suave);margin-top:8px">
+      El margen dice cuánto te deja cada modo. Si el pack deja mucho menos que el detal,
+      ahí tienes dónde ajustar el precio.</div>
   </div>
 
   <div class="card"><h3>Utilidad por producto</h3>
