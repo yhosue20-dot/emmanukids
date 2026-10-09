@@ -1276,6 +1276,61 @@ A.pedidoAVenta=id=>{
 };
 
 /* --- Gastos --- */
+/* Movimiento de dinero que no es una venta ni un gasto:
+   una consignación que no sabes de quién es, un aporte tuyo, una corrección. */
+const MOTIVOS=[
+  ['IDENT','Por identificar','2805 Dinero por identificar'],
+  ['APORTE','Aporte mío','3115 Capital'],
+  ['OTRO','Otro ingreso','4295 Otros ingresos']];
+A.movManual=dir=>{
+  const qId=val('mCuenta'), m=nval('mMonto'), f=val('mFecha')||hoy();
+  const mot=val('mMotivo')||'IDENT', nota=(val('mNota')||'').trim();
+  if(!qId) return decir('Escoge la cuenta','err');
+  if(m<=0) return decir('Escribe el valor','err');
+  const cta=(MOTIVOS.find(x=>x[0]===mot)||MOTIVOS[0])[2];
+  const nom=(MOTIVOS.find(x=>x[0]===mot)||MOTIVOS[0])[1];
+  const con=(dir==='IN'?'Entrada · ':'Salida · ')+nom+(nota?' · '+nota:'');
+  correr(()=>{
+    const q=cuenta(qId);
+    if(dir==='OUT'&&q.saldo<m) throw new Error('En '+q.n+' solo hay '+cop(q.saldo));
+    mover(qId,dir==='IN'?'INGRESO':'EGRESO',m,con,f);
+    asiento(f,con, dir==='IN'
+      ?[{cuenta:'1105 Caja y bancos',d:m},{cuenta:cta,c:m}]
+      :[{cuenta:cta,d:m},{cuenta:'1105 Caja y bancos',c:m}]);
+    return {m,n:q.n};
+  },[],r=>{$('mMonto').value='';$('mNota').value='';
+    return cop(r.m)+(dir==='IN'?' entraron a ':' salieron de ')+r.n});
+};
+A.addCatGastoCampo=()=>{
+  const n=(val('nCatG')||'').trim(); if(!n) return;
+  if(S.catGastos.some(c=>c.toLowerCase()===n.toLowerCase()))
+    return decir('Esa categoría ya existe','err');
+  S.catGastos=[...S.catGastos,n];
+  $('nCatG').value='';
+  guardarCfg({catGastos:S.catGastos});
+  pintar(); decir('Categoría "'+n+'" creada');
+};
+A.delCatGasto=i=>{
+  const c=S.catGastos[i]; if(!c) return;
+  const usada=S.gastos.some(g=>g.cat===c);
+  if(!confirm('¿Borrar la categoría "'+c+'"?'+
+    (usada?'\n\nLos gastos ya registrados con ella no cambian.':''))) return;
+  S.catGastos=S.catGastos.filter((_,x)=>x!==i);
+  if(tmp.gCat===c) tmp.gCat='';
+  guardarCfg({catGastos:S.catGastos});
+  pintar();
+};
+A.addCatGasto=()=>{
+  const n=(prompt('Nombre de la categoría nueva:')||'').trim();
+  if(!n) return;
+  if(S.catGastos.some(c=>c.toLowerCase()===n.toLowerCase()))
+    return decir('Esa categoría ya existe','err');
+  S.catGastos=[...S.catGastos,n];
+  tmp.gCat=n;
+  guardarCfg({catGastos:S.catGastos});
+  decir('Categoría "'+n+'" creada');
+  pintar();
+};
 A.guardarGasto=()=>{
   const m=nval('gMonto'), d=val('gDesc');
   if(!m||!d) return decir('Escribe la descripción y el valor','err');
@@ -2542,16 +2597,75 @@ function vCaja(){
   </div>
 
   <div class="card"><h3>Registrar gasto</h3>
-    <div class="g2">
-      <div><label>Fecha</label><input type="date" id="gFecha" value="${hoy()}"></div>
-      <div><label>Categoría</label><select id="gCat">${S.catGastos.map(c=>`<option>${esc(c)}</option>`).join('')}</select></div>
+    <label>Categoría</label>
+    <div style="display:flex;flex-wrap:wrap;gap:6px">
+      ${S.catGastos.map(c=>`<button onclick="tmp.gCat='${esc(c)}';pintar()"
+        style="border:1px solid ${(tmp.gCat||S.catGastos[0])===c?'var(--tinta)':'var(--linea)'};
+        background:${(tmp.gCat||S.catGastos[0])===c?'var(--tinta)':'#fff'};
+        color:${(tmp.gCat||S.catGastos[0])===c?'#fff':'var(--texto)'};
+        border-radius:999px;padding:7px 13px;font-size:12.5px;font-weight:600;cursor:pointer">
+        ${esc(c)}</button>`).join('')}
+      <button onclick="A.addCatGasto()" style="border:1px dashed var(--linea);background:#fff;
+        color:var(--suave);border-radius:999px;padding:7px 13px;font-size:12.5px;cursor:pointer">
+        + Nueva</button>
     </div>
+    <input type="hidden" id="gCat" value="${esc(tmp.gCat||S.catGastos[0]||'Otros')}">
     <label>¿En qué fue?</label><input id="gDesc" placeholder="Ej: transfer DTF, domicilio, arriendo">
     <div class="g2">
       <div><label>Valor</label><input id="gMonto" inputmode="numeric" placeholder="0"></div>
       <div><label>Sale de</label><select id="gCuenta">${optCuenta()}</select></div>
     </div>
-    <button class="b" style="margin-top:12px" onclick="A.guardarGasto()">Guardar gasto</button>
+    <div class="g2" style="margin-top:8px">
+      <div><label>Fecha</label><input type="date" id="gFecha" value="${hoy()}"></div>
+      <div style="display:flex;align-items:flex-end">
+        <button class="b" onclick="A.guardarGasto()">Guardar gasto</button></div>
+    </div>
+  </div>
+
+  <div class="card"><h3>Entró o salió plata sin ser venta</h3>
+    <p style="font-size:13px;color:var(--suave);margin:0 0 12px">
+      Una consignación que todavía no sabes de quién es, plata que pones tú,
+      o corregir un movimiento que registraste mal.</p>
+    <div class="g2">
+      <div><label>Cuenta</label><select id="mCuenta">${optCuenta()}</select></div>
+      <div><label>Valor</label><input id="mMonto" inputmode="numeric" placeholder="0"></div>
+    </div>
+    <div class="g2">
+      <div><label>Motivo</label><select id="mMotivo">${MOTIVOS.map(([v,n])=>
+        `<option value="${v}">${esc(n)}</option>`).join('')}</select></div>
+      <div><label>Fecha</label><input type="date" id="mFecha" value="${hoy()}"></div>
+    </div>
+    <label>Nota</label><input id="mNota" placeholder="Ej: consignación 92.500, falta saber de quién">
+    <div class="g2" style="margin-top:12px">
+      <button class="b" style="background:var(--ok);box-shadow:none"
+        onclick="A.movManual('IN')">Entró plata</button>
+      <button class="b g" onclick="A.movManual('OUT')">Salió plata</button>
+    </div>
+  </div>
+
+  <div class="card"><h3>Gastos de este mes</h3>
+    ${(()=>{
+      const mes=hoy().slice(0,7);
+      const gm=S.gastos.filter(g=>g.f.slice(0,7)===mes);
+      if(!gm.length) return '<div class="vacio">Todavía no hay gastos este mes.</div>';
+      const porCat={};
+      gm.forEach(g=>{porCat[g.cat||'Otros']=(porCat[g.cat||'Otros']||0)+g.monto});
+      const ord=Object.entries(porCat).sort((a,b)=>b[1]-a[1]);
+      const tot=ord.reduce((s,[,v])=>s+v,0), max=ord[0][1];
+      return ord.map(([c,v],i)=>`<div style="padding:7px 0;border-bottom:1px solid #f4f4f5">
+        <div style="display:flex;justify-content:space-between;align-items:baseline">
+          <div style="font-size:14px;font-weight:${i<2?'700':'500'}">${esc(c)}</div>
+          <div style="white-space:nowrap"><b class="cifra">${cop(v)}</b>
+            <span style="color:var(--suave);font-size:11.5px;margin-left:6px">
+              ${(v/tot*100).toFixed(0)}%</span></div></div>
+        <div style="height:5px;background:#f2eff5;border-radius:9px;margin-top:5px;overflow:hidden">
+          <div style="height:100%;width:${Math.round(v/max*100)}%;
+            background:${i===0?'var(--tinta)':i===1?'#e879b0':'#dcd6e2'}"></div></div>
+      </div>`).join('')+
+      `<div class="item" style="border-top:1px solid var(--linea);border-bottom:0">
+        <div class="t"><b>Total del mes</b></div>
+        <div class="m cifra" style="font-size:18px"><b>${cop(tot)}</b></div></div>`;
+    })()}
   </div>
 
   <div class="card"><h3>Movimientos</h3>
@@ -2826,6 +2940,17 @@ function vAjustes(){
   ${listaEdit('Tallas','tallas','nTal')}
   ${listaEdit('Proveedores','proveedores','nProv')}
   ${listaEdit('Cuentas de dinero','cuentas','nCue')}
+
+  <div class="card"><h3>Categorías de gasto</h3>
+    ${S.catGastos.map((c,i)=>`<div class="item"><div class="t">${esc(c)}</div>
+      <div class="m"><button class="b g chico" style="min-height:30px"
+        onclick="A.delCatGasto(${i})">✕</button></div></div>`).join('')
+      ||'<div class="vacio">Vacío</div>'}
+    <div class="fila" style="margin-top:10px">
+      <input id="nCatG" placeholder="Agregar nueva">
+      <button class="b n chico" style="flex:0 0 auto" onclick="A.addCatGastoCampo()">Agregar</button>
+    </div>
+  </div>
 
   <div class="card"><h3>Respaldo</h3>
     <p style="font-size:13px;color:var(--suave);margin:0 0 12px">
