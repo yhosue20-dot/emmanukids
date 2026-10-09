@@ -162,6 +162,11 @@ td.cbajo .celda,td.cbajo b{color:#b45309}
 .hest{font-size:11px;text-align:right;white-space:nowrap;width:92px;color:#555}
 .hest b{font-size:12px;border:2px solid #000;padding:2px 6px;color:#000}
 .hpie{margin-top:14px;font-size:10.5px;color:#666;text-align:center}
+.hcie{width:100%;border-collapse:collapse;font-size:14px}
+.hcie td{padding:7px 4px;border-bottom:1px solid #ddd}
+.hcie .hn{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.hcie .htot td{border-top:2px solid #000;border-bottom:2px solid #000;font-weight:800;font-size:16px}
+.hcie .hhead td{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#555}
 </style>
 </head>
 <body>
@@ -900,8 +905,17 @@ A.cobrar=fiado=>{
       abonado:recibido,antic,saldo,costo:costoReal,util:total-costoReal,limite,cuentaPago:qId,
       estado:saldo<=0?'PAGADA':(recibido>0?'PARCIAL':'PENDIENTE')});
     if(nuevo>0){
-      nuevoDoc('pagos',{fac:nro,f,monto:nuevo,cuenta:qId,metodo:cuenta(qId).n});
-      mover(qId,'INGRESO',nuevo,'Venta '+nro,f);
+      // Pago dividido: una parte entra a otra cuenta
+      const q2=tmp.dividir?val('vCuenta2'):'', m2=tmp.dividir?Math.min(nval('vMonto2'),nuevo):0;
+      const m1=nuevo-((q2&&q2!==qId)?m2:0);
+      if(m1>0){
+        nuevoDoc('pagos',{fac:nro,f,monto:m1,cuenta:qId,metodo:cuenta(qId).n});
+        mover(qId,'INGRESO',m1,'Venta '+nro,f);
+      }
+      if(q2&&q2!==qId&&m2>0){
+        nuevoDoc('pagos',{fac:nro,f,monto:m2,cuenta:q2,metodo:cuenta(q2).n});
+        mover(q2,'INGRESO',m2,'Venta '+nro,f);
+      }
     }
     if(antic>0&&tmp.antic) PEND.updates.push(
       {ref:doc(db,'pedidos',tmp.antic.ped),data:{estado:'ENTREGADO'}});
@@ -917,7 +931,7 @@ A.cobrar=fiado=>{
       {cuenta:'1435 Inventario lisas',c:costoLisas},
       {cuenta:'1105 Caja y bancos',c:estTotal}]);
     return nro;
-  },[],nro=>{tmp.carrito=[];tmp.precioMan={};tmp.packMan={};tmp.totalMan=0;tmp.cobrando=false;tmp.nota='';tmp.envio=0;tmp.antic=null;
+  },[],nro=>{tmp.carrito=[];tmp.precioMan={};tmp.packMan={};tmp.totalMan=0;tmp.cobrando=false;tmp.nota='';tmp.envio=0;tmp.antic=null;tmp.dividir=false;
     return 'Factura '+nro+' por '+cop(total)+(saldo>0?' · queda debiendo '+cop(saldo):'')});
 };
 
@@ -1374,6 +1388,85 @@ A.imprimir=facId=>{
 };
 
 /* Hoja para imprimir y poner encima de las camisas en el taller */
+/* Arma el cierre como texto para mandarlo por WhatsApp */
+function textoCierre(){
+  const d=tmp.dCierre||hoy();
+  const mov=S.caja.filter(m=>m.f===d);
+  const fd=S.facturas.filter(f=>f.estado!=='ANULADA'&&f.f===d);
+  const gd=S.gastos.filter(g=>g.f===d);
+  const venta=fd.reduce((s,f)=>s+f.total,0), costo=fd.reduce((s,f)=>s+f.costo,0);
+  const gasto=gd.reduce((s,g)=>s+g.monto,0);
+  const und=fd.reduce((s,f)=>s+f.det.reduce((x,y)=>x+y.cant,0),0);
+  const fia=fd.reduce((s,f)=>s+f.saldo,0);
+  const ing=mov.filter(m=>m.tipo==='INGRESO').reduce((s,m)=>s+m.monto,0);
+  const egr=mov.filter(m=>m.tipo==='EGRESO').reduce((s,m)=>s+m.monto,0);
+  const tot=S.cuentas.reduce((s,q)=>s+q.saldo,0);
+  let t='*CIERRE DEL DÍA*\n'+S.empresa.nombre+' · '+fecha(d)+'\n\n';
+  t+='Vendido: '+cop(venta)+'\n';
+  t+=fd.length+' factura'+(fd.length===1?'':'s')+' · '+und+' camiseta'+(und===1?'':'s')+'\n';
+  t+='Costo: -'+cop(costo)+'\n';
+  t+='Gastos: -'+cop(gasto)+'\n';
+  t+='*Ganancia: '+cop(venta-costo-gasto)+'*\n';
+  if(fia) t+='Quedó fiado hoy: '+cop(fia)+'\n';
+  t+='\nEntró: '+cop(ing)+'  |  Salió: '+cop(egr)+'\n';
+  t+='\n*Cuánto debe haber en cada cuenta*\n';
+  S.cuentas.forEach(q=>{ t+=q.n+': '+cop(q.saldo)+'\n' });
+  t+='*Total: '+cop(tot)+'*';
+  return t;
+}
+A.cierreWhats=()=>{
+  window.open('https://wa.me/?text='+encodeURIComponent(textoCierre()),'_blank');
+};
+A.copiarCierre=async()=>{
+  const t=textoCierre();
+  try{ await navigator.clipboard.writeText(t); decir('Cierre copiado · pégalo donde quieras') }
+  catch(e){ prompt('Copia este texto:',t) }
+};
+A.imprimirCierre=()=>{
+  const d=tmp.dCierre||hoy();
+  const mov=S.caja.filter(m=>m.f===d);
+  const fd=S.facturas.filter(f=>f.estado!=='ANULADA'&&f.f===d);
+  const gd=S.gastos.filter(g=>g.f===d);
+  const venta=fd.reduce((s,f)=>s+f.total,0), costo=fd.reduce((s,f)=>s+f.costo,0);
+  const gasto=gd.reduce((s,g)=>s+g.monto,0);
+  const und=fd.reduce((s,f)=>s+f.det.reduce((x,y)=>x+y.cant,0),0);
+  const fia=fd.reduce((s,f)=>s+f.saldo,0);
+  const ctas=S.cuentas.map(q=>{
+    const m=mov.filter(x=>x.cuenta===q.id);
+    return {n:q.n,saldo:q.saldo,
+      e:m.filter(x=>x.tipo==='INGRESO').reduce((s,x)=>s+x.monto,0),
+      s:m.filter(x=>x.tipo==='EGRESO').reduce((s,x)=>s+x.monto,0)};
+  }).filter(x=>x.e||x.s);
+  const fila=(a,b,neg)=>`<tr><td>${a}</td><td class="hn"${neg?' style="color:#b00"':''}>${
+    neg?'−':''}${cop(b)}</td></tr>`;
+  $('recibo').innerHTML=`<div class="hoja">
+    <div class="hcab">
+      <div><div class="hquien">Cierre del día</div>
+        <div class="hsub">${esc(S.empresa.nombre)} · ${fecha(d)}</div></div>
+      <div style="text-align:right"><div class="hsub">${fd.length} factura${
+        fd.length===1?'':'s'}<br>${und} camisetas</div></div>
+    </div>
+    <table class="hcie">
+      ${fila('Vendido',venta)}
+      ${fila('Costo de lo vendido',costo,1)}
+      ${fila('Gastos del día',gasto,1)}
+      <tr class="htot"><td>GANANCIA DEL DÍA</td><td class="hn">${cop(venta-costo-gasto)}</td></tr>
+      ${fia?fila('Quedó fiado hoy',fia):''}
+    </table>
+    <table class="hcie" style="margin-top:12px">
+      <tr class="hhead"><td>Cuenta</td><td class="hn">Entró</td><td class="hn">Salió</td>
+        <td class="hn">Saldo</td></tr>
+      ${ctas.map(x=>`<tr><td>${esc(x.n)}</td>
+        <td class="hn">${x.e?cop(x.e):'—'}</td>
+        <td class="hn">${x.s?cop(x.s):'—'}</td>
+        <td class="hn"><b>${cop(x.saldo)}</b></td></tr>`).join('')
+        ||'<tr><td colspan="4">Sin movimientos de dinero</td></tr>'}
+    </table>
+    <div style="margin-top:18px;font-size:12px">Contado por: ____________________</div>
+    <div class="hpie">Impreso ${fecha(hoy())}</div>
+  </div>`;
+  window.print();
+};
 A.imprimirPedido=id=>{
   const p=S.pedidos.find(x=>x._id===id); if(!p)return;
   const und=p.items.reduce((s,r)=>s+r.cant,0);
@@ -2064,6 +2157,16 @@ function vVender(){
         Total a recibir: <b id="totCobro" style="color:var(--texto)">${cop(total+(tmp.envio||0))}</b></div>
       <label>Entra el dinero a</label>
       <select id="vCuenta">${optCuenta()}</select>
+      ${tmp.dividir?`
+        <div class="g2" style="margin-top:8px">
+          <div><label>Y una parte a</label><select id="vCuenta2">${optCuenta()}</select></div>
+          <div><label>¿Cuánto a esa?</label><input id="vMonto2" inputmode="numeric" placeholder="0"></div>
+        </div>
+        <button onclick="tmp.dividir=false;pintar()" style="border:0;background:none;padding:4px 0;
+          color:var(--suave);font-size:12.5px;cursor:pointer">Quitar el pago dividido ✕</button>
+      `:`<button onclick="tmp.dividir=true;pintar()" style="border:0;background:none;padding:5px 0;
+        color:var(--tinta);font-size:12.5px;font-weight:600;cursor:pointer">
+        + Pagó con dos cuentas</button>`}
       <div class="g2">
         <div><label>${tmp.antic?'Paga hoy además':'Abono (si fía)'}</label>
           <input id="vAbono" inputmode="numeric" placeholder="0"></div>
@@ -2338,13 +2441,69 @@ function vCartera(){
 /* ── Caja ───────────────────────────────────────────────── */
 function vCaja(){
   const h=hoy();
-  const hoyMov=S.caja.filter(m=>m.f===h);
-  const ing=hoyMov.filter(m=>m.tipo==='INGRESO').reduce((s,m)=>s+m.monto,0);
-  const egr=hoyMov.filter(m=>m.tipo==='EGRESO').reduce((s,m)=>s+m.monto,0);
+  const d=tmp.dCierre||h;                       // día del cierre
+  const mov=S.caja.filter(m=>m.f===d);
+  const ing=mov.filter(m=>m.tipo==='INGRESO').reduce((s,m)=>s+m.monto,0);
+  const egr=mov.filter(m=>m.tipo==='EGRESO').reduce((s,m)=>s+m.monto,0);
+  const fdia=S.facturas.filter(f=>f.estado!=='ANULADA'&&f.f===d);
+  const gdia=S.gastos.filter(g=>g.f===d);
+  const ventaD=fdia.reduce((s,f)=>s+f.total,0);
+  const costoD=fdia.reduce((s,f)=>s+f.costo,0);
+  const gastoD=gdia.reduce((s,g)=>s+g.monto,0);
+  const undD=fdia.reduce((s,f)=>s+f.det.reduce((x,y)=>x+y.cant,0),0);
+  const fiadoD=fdia.reduce((s,f)=>s+f.saldo,0);
+  // Entradas y salidas de ese día, cuenta por cuenta
+  const porCta=S.cuentas.map(q=>{
+    const m=mov.filter(x=>x.cuenta===q.id);
+    return {q, e:m.filter(x=>x.tipo==='INGRESO').reduce((s,x)=>s+x.monto,0),
+               s:m.filter(x=>x.tipo==='EGRESO').reduce((s,x)=>s+x.monto,0)};
+  }).filter(x=>x.e||x.s);
   return `
-  <div class="g2" style="margin-bottom:12px">
-    <div class="kpi"><div class="et">Entró hoy</div><div class="v cifra" style="color:var(--ok)">${cop(ing)}</div></div>
-    <div class="kpi"><div class="et">Salió hoy</div><div class="v cifra" style="color:var(--tinta)">${cop(egr)}</div></div>
+  <div class="card"><h3>Cierre del día</h3>
+    <div class="g2">
+      <div><label>Día</label><input type="date" value="${d}"
+        onchange="tmp.dCierre=this.value;pintar()"></div>
+      <div style="display:flex;align-items:flex-end">
+        <button class="b" style="background:#25D366;box-shadow:none"
+          onclick="A.cierreWhats()">Enviar por WhatsApp</button></div>
+    </div>
+    <div class="g2" style="margin-top:8px">
+      <button class="b g chico" style="width:100%" onclick="A.copiarCierre()">Copiar texto</button>
+      <button class="b g chico" style="width:100%" onclick="A.imprimirCierre()">🖨 Imprimir</button>
+    </div>
+    <div class="g2" style="margin-top:12px">
+      <div class="kpi"><div class="et">Entró</div>
+        <div class="v cifra" style="color:var(--ok)">${cop(ing)}</div></div>
+      <div class="kpi"><div class="et">Salió</div>
+        <div class="v cifra" style="color:var(--tinta)">${cop(egr)}</div></div>
+    </div>
+    <div class="item" style="margin-top:10px"><div class="t">Vendido</div>
+      <div class="m cifra">${cop(ventaD)}<div class="s">${fdia.length} factura${
+        fdia.length===1?'':'s'} · ${undD} camisetas</div></div></div>
+    <div class="item"><div class="t">Costo de lo vendido</div>
+      <div class="m cifra">−${cop(costoD)}</div></div>
+    <div class="item"><div class="t">Gastos del día</div>
+      <div class="m cifra">−${cop(gastoD)}</div></div>
+    <div class="item" style="border-top:1px solid var(--linea)">
+      <div class="t"><b>Ganancia del día</b></div>
+      <div class="m cifra" style="font-size:19px;color:${ventaD-costoD-gastoD>=0?'var(--ok)':'var(--tinta)'}">
+        <b>${cop(ventaD-costoD-gastoD)}</b></div></div>
+    ${fiadoD?`<div class="item"><div class="t">Quedó fiado hoy</div>
+      <div class="m cifra" style="color:var(--tinta)">${cop(fiadoD)}</div></div>`:''}
+
+    ${porCta.length?`<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--linea)">
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;
+        color:var(--suave);font-weight:700;margin-bottom:4px">Cuenta por cuenta</div>
+      <div class="scroll"><table class="malla">
+        <tr><th>Cuenta</th><th class="n">Entró</th><th class="n">Salió</th><th class="n">Saldo ahora</th></tr>
+        ${porCta.map(x=>`<tr><td>${esc(x.q.n)}</td>
+          <td class="n" style="color:var(--ok)">${x.e?cop(x.e):''}</td>
+          <td class="n" style="color:var(--tinta)">${x.s?cop(x.s):''}</td>
+          <td class="n"><b>${cop(x.q.saldo)}</b></td></tr>`).join('')}
+      </table></div>
+      <div style="font-size:11.5px;color:var(--suave);margin-top:6px">
+        El saldo es el de ahora, no el del cierre de ese día.</div>
+    </div>`:'<div class="vacio">Sin movimientos de dinero ese día.</div>'}
   </div>
 
   <div class="card"><h3>Saldos</h3>
@@ -2396,12 +2555,44 @@ function vCaja(){
   </div>
 
   <div class="card"><h3>Movimientos</h3>
-    ${S.caja.slice(0,40).map(m=>`<div class="item">
-      <div><div class="t">${esc(m.concepto)}</div>
-        <div class="s">${fecha(m.f)} · ${esc(cuenta(m.cuenta).n)}</div></div>
-      <div class="m cifra" style="color:${m.tipo==='INGRESO'?'var(--ok)':'var(--tinta)'}">
-        ${m.tipo==='INGRESO'?'+':'−'}${cop(m.monto)}</div></div>`).join('')
-      ||'<div class="vacio">Sin movimientos todavía.</div>'}
+    <div style="display:flex;gap:6px;overflow-x:auto;padding-bottom:6px;margin-bottom:4px">
+      ${[['','Todas']].concat(S.cuentas.map(q=>[q.id,q.n])).map(([v,n])=>`
+        <button onclick="tmp.fCta='${v}';pintar()"
+          style="flex:0 0 auto;border:1px solid ${(tmp.fCta||'')===v?'var(--tinta)':'var(--linea)'};
+          background:${(tmp.fCta||'')===v?'var(--tinta)':'#fff'};
+          color:${(tmp.fCta||'')===v?'#fff':'var(--texto)'};
+          border-radius:999px;padding:6px 12px;font-size:12.5px;font-weight:600;cursor:pointer">
+          ${esc(n)}</button>`).join('')}
+    </div>
+    ${(()=>{
+      const fc=tmp.fCta||'';
+      const mv=S.caja.filter(m=>!fc||m.cuenta===fc).slice(0,60);
+      if(!mv.length) return '<div class="vacio">Sin movimientos en esa cuenta.</div>';
+      if(fc){
+        const e=mv.filter(m=>m.tipo==='INGRESO').reduce((s,m)=>s+m.monto,0);
+        const sa=mv.filter(m=>m.tipo==='EGRESO').reduce((s,m)=>s+m.monto,0);
+        var cab=`<div class="item" style="background:#faf9fb;border-radius:11px;padding:9px 11px;
+          border:0;margin-bottom:6px">
+          <div class="t">${esc(cuenta(fc).n)} · saldo <b class="cifra">${cop(cuenta(fc).saldo)}</b></div>
+          <div class="m" style="font-size:12.5px">
+            <span style="color:var(--ok)">+${cop(e)}</span>
+            <span style="color:var(--tinta);margin-left:7px">−${cop(sa)}</span></div></div>`;
+      }
+      // Agrupadas por día para que se lean como un extracto
+      let dia='', out=fc?cab:'';
+      mv.forEach(m=>{
+        if(m.f!==dia){ dia=m.f;
+          out+=`<div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;
+            color:var(--suave);font-weight:700;margin:10px 0 2px">${fecha(dia)}</div>` }
+        out+=`<div class="item">
+          <div><div class="t">${esc(m.concepto)}</div>
+            ${fc?'':`<div class="s">${esc(cuenta(m.cuenta).n)}</div>`}</div>
+          <div class="m cifra" style="color:${m.tipo==='INGRESO'?'var(--ok)':'var(--tinta)'}">
+            ${m.tipo==='INGRESO'?'+':'−'}${cop(m.monto)}
+            <div class="s cifra" style="font-weight:400">queda ${cop(m.saldo)}</div></div></div>`;
+      });
+      return out;
+    })()}
   </div>`;
 }
 
