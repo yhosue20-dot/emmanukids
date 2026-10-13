@@ -148,6 +148,7 @@ button.chico{min-height:38px;font-size:13.5px;width:auto;padding:0 13px}
   border-left:4px solid currentColor;background:#fff;box-shadow:var(--sombra)}
 .aviso.err{background:var(--tinta-bg);color:#A80052}
 .aviso.ok{background:var(--ok-bg);color:var(--ok)}
+.aviso.warn{background:var(--amar-bg);color:#8A6000}
 .vacio{text-align:center;color:var(--suave);font-size:14px;padding:24px 8px}
 
 /* ── Tablas ───────────────────────────────────────────── */
@@ -170,6 +171,19 @@ td.c0{background:var(--tinta-bg)}
 td.c0 .celda,td.c0 b{color:#C4005E}
 td.cbajo{background:var(--amar-bg)}
 td.cbajo .celda,td.cbajo b{color:#9A6B00}
+
+/* ── Fichas de paso (línea → diseño). Se acomodan en varias filas,
+      nunca en una tira horizontal que haya que arrastrar. ───────── */
+.pasos{display:flex;flex-wrap:wrap;gap:6px}
+.pchip{border:1px solid var(--linea);background:var(--papel);color:var(--texto);
+  border-radius:999px;padding:8px 13px;font:inherit;font-size:13px;font-weight:700;
+  cursor:pointer;min-height:38px;display:inline-flex;align-items:center;gap:6px;
+  transition:background .12s,color .12s,border-color .12s}
+.pchip:hover{border-color:#F3A8CC;color:var(--tinta)}
+.pchip span{font-weight:600;opacity:.6;font-variant-numeric:tabular-nums}
+.pchip.on{background:var(--tinta);border-color:var(--tinta);color:#fff}
+.pchip.on span{opacity:.75}
+.pasos.chico .pchip{font-size:12.5px;font-weight:600;padding:6px 11px;min-height:34px}
 
 /* ── Producto ─────────────────────────────────────────── */
 .prod{background:var(--papel);border:1px solid var(--linea);border-radius:var(--r-dato);
@@ -506,7 +520,10 @@ const talla=i=>S.tallas.find(x=>x.id===i)||{n:'?'};
 const tallasOrd=()=>S.tallas.slice().sort((a,b)=>
   (parseInt(a.n,10)||999)-(parseInt(b.n,10)||999)||String(a.n).localeCompare(String(b.n)));
 const diseno=i=>S.disenos.find(x=>x.id===i)||{n:'General'};
-const linea=i=>S.lineas.find(x=>x.id===i)||S.lineas[0];
+/* Si la línea guardada ya no existe (se borró o se renombró en Ajustes) NO la
+   disfrazamos con la primera línea: se marca para verla y repararla. */
+const linea=i=>S.lineas.find(x=>x.id===i)||
+  (i?Object.assign({},S.lineas[0],{id:i,n:'⚠ Sin línea',huerfana:true}):S.lineas[0]);
 const cliente=i=>S.clientes.find(x=>x.id===i)||{n:'Consumidor final'};
 const cuenta=i=>S.cuentas.find(x=>x.id===i)||S.cuentas[0];
 
@@ -515,6 +532,32 @@ const kT=(d,l,c,t)=>[d,l,c,t].join('|');
 const nomL=k=>{const[c,t]=k.split('|');return color(c).n+' · T'+talla(t).n};
 const nomT=k=>{const[d,l,c,t]=k.split('|');
   return (usaDis(l)?diseno(d).n+' · ':'')+linea(l).n+' · '+color(c).n+' · T'+talla(t).n};
+
+/* Buscar escribiendo pedazos en cualquier orden: "spi neg 8" encuentra
+   SPIDY · Premium · Negro · T6-8. Sin tildes ni mayúsculas. */
+const nm=x=>String(x).normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase();
+const calza=(texto,q)=>{const pal=nm(q).split(/\s+/).filter(Boolean);
+  if(!pal.length) return true; const t=nm(texto); return pal.every(w=>t.includes(w))};
+
+/* Clave de GRUPO de estampadas, igual en Vender y en Inventario.
+   El diseño solo cuenta si la línea maneja diseños; así las camisetas viejas
+   que quedaron con un diseño suelto (de cuando Económica usaba diseños) no
+   se parten en varios grupos que se ven todos iguales. */
+const grupoT=k=>{const p=k.split('|');return (usaDis(p[1])?p[0]:'*')+'|'+p[1]};
+const nomGrupo=gk=>{const[d,l]=gk.split('|');
+  return (d!=='*'?diseno(d).n+' · ':'')+linea(l).n};
+/* Agrupa el inventario estampado por grupo, guardando las claves REALES
+   (no las reconstruye) para que nada se quede invisible. */
+function gruposT(filtro){
+  const G={};
+  Object.entries(S.terminados).forEach(([k,v])=>{
+    if(v.cant<=0) return; if(filtro&&!filtro(k,v)) return;
+    const gk=grupoT(k), p=k.split('|');
+    const g=G[gk]=G[gk]||{gk,cant:0,lin:p[1],dis:usaDis(p[1])?p[0]:DGEN,cel:{},keys:[]};
+    g.cant+=v.cant; g.cel[p[2]+'|'+p[3]]=k; g.keys.push(k);
+  });
+  return G;
+}
 
 const invL=k=>S.lisas[k]||{cant:0,valor:0};
 const invT=k=>S.terminados[k]||{cant:0,valor:0};
@@ -562,8 +605,91 @@ function precioPor(lineaId,cant,tipoVenta){
 const A={};
 
 /* --- Ajuste de inventario: corregir conteo, mermas o pruebas --- */
+/* Pasa unidades estampadas de un diseño a otro, sin tocar plata ni cantidades.
+   Sirve cuando una tanda quedó sin diseño ("General") o con el diseño cambiado. */
+A.moverDiseno=k=>{
+  const [dv,l,c,t]=k.split('|');
+  if(!usaDis(l)) return decir('Esa línea no maneja diseños','err');
+  const hay=invT(k).cant;
+  if(hay<=0) return decir('No hay unidades de esa referencia','err');
+  const lista=S.disenos.filter(d=>d.id!==dv);
+  if(!lista.length) return decir('Crea primero otro diseño en Ajustes','err');
+  const menu=lista.map((d,i)=>(i+1)+') '+d.n).join('\n');
+  const pick=prompt('Hoy están como "'+diseno(dv).n+'"\n'+
+    color(c).n+' · T'+talla(t).n+' · '+hay+' unidades\n\n¿A qué diseño las paso?\n'+menu,'1');
+  if(pick===null) return;
+  const dest=lista[(+pick||0)-1];
+  if(!dest) return decir('Opción inválida','err');
+  const v=prompt('¿Cuántas de las '+hay+' paso a '+dest.n+'?',hay);
+  if(v===null) return;
+  const q=Math.min(hay,Math.max(0,+String(v).replace(/[^\d]/g,'')||0));
+  if(q<=0) return decir('Escribe cuántas','err');
+  const kn=kT(dest.id,l,c,t);
+  correr(()=>{
+    const f=hoy(), ref='Cambio de diseño';
+    const cu=salida('T',k,q,{f,t:'AJUSTE',ref});
+    entrada('T',kn,q,cu,{f,t:'AJUSTE',ref});
+    return {q,a:diseno(dv).n,b:dest.n};
+  },[],r=>r.q+' pasaron de '+r.a+' a '+r.b);
+};
+/* Repara un grupo entero de estampadas: las camisetas que quedaron con una
+   línea que ya se borró, o con un diseño suelto en una línea que ya no maneja
+   diseños, pasan a la referencia correcta. No cambia cantidades ni plata:
+   cada unidad se mueve con su mismo costo. */
+A.repararGrupo=gk=>{
+  const G=gruposT(), g=G[gk];
+  if(!g) return decir('Ese grupo ya no existe','err');
+  const vieja=linea(g.lin);
+  let dest=vieja.huerfana?null:g.lin;
+  if(!dest){
+    const menu=S.lineas.map((L,i)=>(i+1)+') '+L.n).join('\n');
+    const pick=prompt('Estas '+g.cant+' camisetas tienen una línea que ya no existe.'+
+      '\n\n¿A qué línea pertenecen?\n'+menu,'1');
+    if(pick===null) return;
+    const L=S.lineas[(+pick||0)-1];
+    if(!L) return decir('Opción inválida','err');
+    dest=L.id;
+  }
+  let disDest=DGEN;
+  if(usaDis(dest)){
+    const d=S.disenos.find(x=>x.id===g.dis);
+    if(d) disDest=d.id;
+    else{
+      const menu=S.disenos.map((x,i)=>(i+1)+') '+x.n).join('\n');
+      if(!S.disenos.length) return decir('Crea primero un diseño en Ajustes','err');
+      const pick=prompt('La línea '+linea(dest).n+' maneja diseños.'+
+        '\n\n¿Qué diseño llevan estas '+g.cant+' camisetas?\n'+menu,'1');
+      if(pick===null) return;
+      const x=S.disenos[(+pick||0)-1];
+      if(!x) return decir('Opción inválida','err');
+      disDest=x.id;
+    }
+  }
+  const pares=g.keys.map(k=>{const p=k.split('|');
+    return [k,kT(disDest,dest,p[2],p[3])]}).filter(([a,b])=>a!==b);
+  if(!pares.length) return decir('Ese grupo ya está bien','err');
+  if(!confirm('Paso '+g.cant+' camisetas a '+
+    (usaDis(dest)?diseno(disDest).n+' · ':'')+linea(dest).n+
+    '.\n\nLas cantidades y los costos no cambian.')) return;
+  correr(()=>{
+    const f=hoy(), ref='Reparar referencia';
+    let n=0;
+    pares.forEach(([a,b])=>{
+      const q=invT(a).cant; if(q<=0) return;
+      const cu=salida('T',a,q,{f,t:'AJUSTE',ref});
+      entrada('T',b,q,cu,{f,t:'AJUSTE',ref});
+      n+=q;
+    });
+    return {n};
+  },[],r=>{tmp.fDis='';tmp.grupo='';
+    return r.n+' camisetas quedaron en '+(usaDis(dest)?diseno(disDest).n+' · ':'')+linea(dest).n});
+};
 A.ajustarInv=(tipo,k)=>{
   const nom=tipo==='L'?nomL(k):nomT(k);
+  if(tipo==='T'&&usaDis(k.split('|')[1])&&S.disenos.length>1){
+    const q=confirm(nom+'\n\nAceptar = corregir la cantidad\nCancelar = cambiar de diseño');
+    if(!q) return A.moverDiseno(k);
+  }
   const inv=tipo==='L'?invL(k):invT(k);
   const v=prompt('Ajustar '+nom+'\n\nAhora la app dice: '+inv.cant+
     ' unidades.\n¿Cuántas hay realmente? (0 para borrarlas todas)', inv.cant);
@@ -624,7 +750,7 @@ A.guardarCompra=()=>{
 const usadasProd=k=>(tmp.prod||[]).filter(r=>r.k===k).reduce((s,r)=>s+r.cant,0);
 A.addProdFila=()=>{
   const t=val('pTal');
-  const lId=tmp.lin||S.lineas[0].id;
+  const lId=val('pLin')||tmp.lin||S.lineas[0].id;
   const dis=usaDis(lId)?val('pDis'):DGEN;
   if(usaDis(lId)&&!dis) return decir('Elige el diseño. Créalo en Ajustes si no está','err');
   if(!t) return decir('Escoge la talla','err');
@@ -642,8 +768,8 @@ A.addProdFila=()=>{
   if(!pedir.length) return decir('Escribe la cantidad en al menos un color','err');
   let metidas=0;
   pedir.forEach(({k,q})=>{
-    const ya=tmp.prod.find(r=>r.k===k&&r.dis===dis);
-    if(ya) ya.cant+=q; else tmp.prod.push({k,cant:q,merma:0,dis});
+    const ya=tmp.prod.find(r=>r.k===k&&r.dis===dis&&r.lin===lId);
+    if(ya) ya.cant+=q; else tmp.prod.push({k,cant:q,merma:0,dis,lin:lId});
     metidas+=q;
   });
   S.colores.forEach(c=>{ const e=$('pq_'+c.id); if(e) e.value='' });
@@ -679,7 +805,7 @@ A.guardarProd=()=>{
     filas.forEach(r=>{
       const b=r.cant-r.merma; if(b<=0) return;
       const [c,t]=r.k.split('|');
-      entrada('T',kT(r.dis||dId,lId,c,t),b,cu,{f,t:'PRODUCCION',ref});
+      entrada('T',kT(r.dis||dId,r.lin||lId,c,t),b,cu,{f,t:'PRODUCCION',ref});
     });
     const desembolso=costoEst+mo;
     if(desembolso>0&&qId) mover(qId,'EGRESO',desembolso,'Producción '+ref,f);
@@ -688,7 +814,9 @@ A.guardarProd=()=>{
       {cuenta:'1435 Inventario lisas',c:costoLisas},
       {cuenta:'1105 Caja y bancos',c:desembolso}]);
     const disUsados=[...new Set(filas.map(r=>r.dis||dId))];
-    nuevoDoc('ordenes',{ref,f,diseno:dId,disenos:disUsados,linea:lId,filas,est,mo,
+    const linUsadas=[...new Set(filas.map(r=>r.lin||lId))];
+    nuevoDoc('ordenes',{ref,f,diseno:dId,disenos:disUsados,linea:linUsadas[0],
+      lineas:linUsadas,filas,est,mo,
       procesadas,buenas,merma:procesadas-buenas,costoLisas,costoTotal:totalCosto,cu});
     return cu;
   },[],cu=>{tmp.prod=[];return num(buenas)+' camisetas listas · costo real '+cop(cu)+' c/u'});
@@ -797,8 +925,23 @@ A.agregar=k=>{
   const ex=tmp.carrito.find(x=>x.id===k);
   if(ex){ if(ex.cant>=invT(k).cant) return decir('Solo quedan '+invT(k).cant+' unidades','err'); ex.cant++ }
   else tmp.carrito.push({id:k,k,cant:1});
-  if(tmp.carAbierto===undefined) tmp.carAbierto=false;
   pintar();
+  // Si venía buscando, el cursor vuelve al buscador para la siguiente camiseta
+  if(tmp.busq&&$('vBusq')) $('vBusq').focus({preventScroll:true});
+};
+/* Enter en el buscador: si lo que escribió deja una sola referencia, la suma
+   y limpia la casilla para seguir escribiendo la siguiente camiseta. */
+A.agregarUnico=()=>{
+  const q=tmp.busq||'';
+  if(!q.trim()) return;
+  const l=Object.entries(S.terminados).filter(([k,v])=>v.cant>0)
+    .filter(([k])=>calza(nomT(k),q));
+  if(l.length!==1) return decir(l.length
+    ?'Hay '+l.length+' referencias con eso · escribe un poco más'
+    :'Nada con "'+q+'"','err');
+  tmp.busq='';
+  A.agregar(l[0][0]);
+  const e=$('vBusq'); if(e) e.focus({preventScroll:true});
 };
 /* Estampar al momento: sale de lisas, se estampa y se vende en la misma venta */
 A.agregarXM=()=>{
@@ -1347,24 +1490,22 @@ A.eliminarPedido=async id=>{
 A.pedidoATaller=id=>{
   const p=S.pedidos.find(x=>x._id===id); if(!p)return;
   const lin=p.items[0].k.split('|')[1];
-  const otras=p.items.some(r=>r.k.split('|')[1]!==lin);
   tmp.lin=lin; tmp.prod=[];
   const sinLisa=[]; let cargadas=0;
-  p.items.filter(r=>r.k.split('|')[1]===lin).forEach(r=>{
+  p.items.forEach(r=>{
     // Solo se manda a estampar lo que NO está ya en bodega
     const falta=r.cant-invT(r.k).cant;
     if(falta<=0) return;
-    const [d,,c,t]=r.k.split('|'), kl=kL(c,t);
+    const [d,l2,c,t]=r.k.split('|'), kl=kL(c,t);
     const libres=invL(kl).cant-tmp.prod.filter(x=>x.k===kl).reduce((s,x)=>s+x.cant,0);
     if(libres<falta){ sinLisa.push(nomL(kl)+' (hay '+libres+', faltan '+falta+')'); return }
-    tmp.prod.push({k:kl,cant:falta,merma:0,dis:d});
+    tmp.prod.push({k:kl,cant:falta,merma:0,dis:d,lin:l2});
     cargadas+=falta;
   });
   ir('taller');
   decir(sinLisa.length?'Faltan lisas · '+sinLisa.join(' · '):
     (!cargadas?'Ya tienes todo estampado para ese pedido':
-     'Solo lo que falta: '+cargadas+' camiseta'+(cargadas===1?'':'s')+
-     (otras?'. Lo de la otra línea va en una tanda aparte.':'')),
+     'Solo lo que falta: '+cargadas+' camiseta'+(cargadas===1?'':'s')),
     sinLisa.length?'err':'ok');
 };
 /* Manda las camisetas del pedido al carrito de Vender */
@@ -1920,8 +2061,9 @@ function vTaller(){
 
     ${filas.length?`<div style="margin-top:14px">
       ${filas.map((r,i)=>`<div class="item">
-        <div><div class="t">${usaDis(tmp.lin||S.lineas[0].id)?
-          `<span class="tag" style="margin-right:5px">${esc(diseno(r.dis).n)}</span>`:''}${esc(nomL(r.k))}</div>
+        <div><div class="t">
+          <span class="tag" style="margin-right:5px">${esc(linea(r.lin).n)}</span>${
+          usaDis(r.lin)?`<span class="tag" style="margin-right:5px">${esc(diseno(r.dis).n)}</span>`:''}${esc(nomL(r.k))}</div>
           <div class="s">${r.cant} usadas${r.merma?' · <b style="color:var(--tinta)">'+r.merma+' dañadas</b>':''} · lisa a ${cop(costoL(r.k))}</div></div>
         <div class="m" style="display:flex;gap:5px">
           <button class="b g chico" style="min-height:30px;padding:0 9px"
@@ -1943,9 +2085,12 @@ function vTaller(){
 
   <div class="card"><h3>Producciones anteriores</h3>
     ${S.ordenes.slice(0,15).map(o=>`<div class="item">
-      <div><div class="t">${usaDis(o.linea)?esc((()=>{
-        const ds=[...new Set((o.filas||[]).map(r=>r.dis||o.diseno))];
-        return ds.length>1?ds.length+' diseños':diseno(ds[0]).n})())+' · ':''}${esc(linea(o.linea).n)}${
+      <div><div class="t">${(()=>{
+        const ls=[...new Set((o.filas||[]).map(r=>r.lin||o.linea))];
+        const ds=[...new Set((o.filas||[]).map(r=>r.dis||o.diseno))].filter(d=>d&&d!==DGEN);
+        const tl=ls.length>1?ls.length+' líneas':esc(linea(ls[0]).n);
+        return (ds.length?(ds.length>1?ds.length+' diseños':esc(diseno(ds[0]).n))+' · ':'')+tl;
+      })()}${
         o.estado==='ANULADA'?' <span class="tag rojo">ANULADA</span>':''}</div>
         <div class="s">${o.ref||''} · ${fecha(o.f)} · ${o.buenas} buenas${o.merma?', '+o.merma+' dañadas':''}</div>
         <button onclick="A.verLote('${o._id}')" style="border:0;background:none;padding:3px 0;
@@ -1953,10 +2098,10 @@ function vTaller(){
           ${(tmp.lote||{})[o._id]?'▾ Ocultar detalle':'▸ Ver qué lleva'}</button>
         ${(tmp.lote||{})[o._id]?`<div style="background:#faf9fb;border-radius:11px;padding:9px 11px;
           margin-top:4px;font-size:12.5px">
-          ${(o.filas||[]).map(r=>{const [c,t]=r.k.split('|');
+          ${(o.filas||[]).map(r=>{const [c,t]=r.k.split('|'); const rl=r.lin||o.linea;
             return `<div style="padding:2.5px 0">
               <span class="punto" style="background:${color(c).hex}"></span>
-              ${usaDis(o.linea)?'<b>'+esc(diseno(r.dis||o.diseno).n)+'</b> · ':''}${esc(color(c).n)} ·
+              ${esc(linea(rl).n)} · ${usaDis(rl)?'<b>'+esc(diseno(r.dis||o.diseno).n)+'</b> · ':''}${esc(color(c).n)} ·
               T${esc(talla(t).n)} · <b>${r.cant-r.merma}</b>${r.merma?` <span style="color:var(--tinta)">(${r.merma} dañada${r.merma===1?'':'s'})</span>`:''}
             </div>`}).join('')||'<div style="color:var(--suave)">Sin detalle guardado</div>'}
           <div style="border-top:1px solid var(--linea);margin-top:6px;padding-top:6px;color:var(--suave)">
@@ -2005,29 +2150,22 @@ function vInventario(){
         onclick="tmp.qInv='';pintar()">✕</button>`:''}
     </div>
     ${(()=>{
-      const gs={};
-      Object.entries(S.terminados).forEach(([k,v])=>{ if(v.cant<=0)return;
-        const p=k.split('|'), gk=(usaDis(p[1])?p[0]+'|':'')+p[1];
-        gs[gk]=(gs[gk]||0)+v.cant });
-      const nomG=x=>{const p=x.split('|');
-        return (p.length>1?diseno(p[0]).n+' · ':'')+linea(p.length>1?p[1]:p[0]).n};
+      const G=gruposT();
+      const gs=Object.keys(G).sort((a,b)=>nomGrupo(a).localeCompare(nomGrupo(b)));
       const tals=tallasOrd().filter(x=>
         Object.keys(S.lisas).some(k=>k.split('|')[1]===x.id&&S.lisas[k].cant>0)||
         Object.keys(S.terminados).some(k=>k.split('|')[3]===x.id&&S.terminados[k].cant>0));
-      const chip=(act,txt,acc)=>`<button onclick="${acc}"
-        style="flex:0 0 auto;border:1px solid ${act?'var(--tinta)':'var(--linea)'};
-        background:${act?'var(--tinta)':'#fff'};color:${act?'#fff':'var(--texto)'};
-        border-radius:999px;padding:6px 12px;font-size:12.5px;font-weight:600;cursor:pointer">
-        ${txt}</button>`;
+      const chip=(act,txt,acc)=>`<button class="pchip ${act?'on':''}"
+        onclick="${acc}">${txt}</button>`;
       return `
-      <div style="display:flex;gap:6px;overflow-x:auto;margin-top:9px;padding-bottom:4px">
+      <div class="pasos chico" style="margin-top:9px">
         ${chip(!tmp.fTal,'Todas las tallas',"tmp.fTal='';pintar()")}
         ${tals.map(x=>chip(tmp.fTal===x.id,'T'+esc(x.n),`tmp.fTal='${x.id}';pintar()`)).join('')}
       </div>
-      ${Object.keys(gs).length>1?`<div style="display:flex;gap:6px;overflow-x:auto;padding-bottom:4px">
-        ${chip(!tmp.fDis,'Todos los diseños',"tmp.fDis='';pintar()")}
-        ${Object.entries(gs).map(([k,n])=>chip(tmp.fDis===k,
-          esc(nomG(k))+' <span style="opacity:.6">'+n+'</span>',`tmp.fDis='${k}';pintar()`)).join('')}
+      ${gs.length>1?`<div class="pasos chico" style="margin-top:6px">
+        ${chip(!tmp.fDis,'Todo',"tmp.fDis='';pintar()")}
+        ${gs.map(x=>chip(tmp.fDis===x,
+          esc(nomGrupo(x))+' <span>'+G[x].cant+'</span>',`tmp.fDis='${x}';pintar()`)).join('')}
       </div>`:''}`;
     })()}
   </div>
@@ -2109,34 +2247,44 @@ function vInventario(){
 
   <div class="card"><h3>Camisetas estampadas · listas para vender</h3>
     ${t.length?(()=>{
-      // Una cuadrícula por diseño y línea: colores en filas, tallas en columnas
-      const g={};
-      t.forEach(([k,v])=>{
-        const p=k.split('|'), gk=(usaDis(p[1])?p[0]+'|':'')+p[1];
-        (g[gk]=g[gk]||[]).push([k,v]);
-      });
-      return Object.entries(g).filter(([gk])=>!fDis||gk===fDis).map(([gk,filas])=>{
-        const p=gk.split('|'), lin=p.length>1?p[1]:p[0], dis=p.length>1?p[0]:DGEN;
-        const tit=(p.length>1?diseno(p[0]).n+' · ':'')+linea(lin).n;
-        const tot=filas.reduce((s,[,v])=>s+v.cant,0);
-        const kk=(c,ta)=>kT(dis,lin,c,ta);
-        const cols=S.colores.filter(c=>filCol(c)&&S.tallas.some(x=>filTal(x)&&invT(kk(c.id,x.id)).cant>0));
-        const tals=tallasOrd().filter(x=>filTal(x)&&S.colores.some(c=>filCol(c)&&invT(kk(c.id,x.id)).cant>0));
+      // Una cuadrícula por grupo (diseño + línea), con las claves reales del
+      // inventario: así un grupo nunca se repite ni se queda nada invisible.
+      const G=gruposT((k,v)=>filT(k));
+      const pos=x=>{const i=S.lineas.findIndex(y=>y.id===x.split('|')[1]);return i<0?99:i};
+      const orden=Object.keys(G).sort((a,b)=>pos(a)-pos(b)||nomGrupo(a).localeCompare(nomGrupo(b)));
+      return orden.filter(gk=>!fDis||gk===fDis).map(gk=>{
+        const g=G[gk], lin=g.lin, tit=nomGrupo(gk), tot=g.cant;
+        const cel=(c,ta)=>g.cel[c+'|'+ta];
+        const cant=(c,ta)=>{const k=cel(c,ta);return k?invT(k).cant:0};
+        const cols=S.colores.filter(c=>filCol(c)&&S.tallas.some(x=>filTal(x)&&cant(c.id,x.id)>0));
+        const tals=tallasOrd().filter(x=>filTal(x)&&S.colores.some(c=>filCol(c)&&cant(c.id,x.id)>0));
         if(!cols.length) return '';
-        const totC=cid=>tals.reduce((s,x)=>s+invT(kk(cid,x.id)).cant,0);
-        const totT=tid=>cols.reduce((s,c)=>s+invT(kk(c.id,tid)).cant,0);
+        const totC=cid=>tals.reduce((s,x)=>s+cant(cid,x.id),0);
+        const totT=tid=>cols.reduce((s,c)=>s+cant(c.id,tid),0);
+        // ¿El grupo quedó con una línea borrada, o con diseños sueltos en una
+        // línea que ya no maneja diseños? Entonces se puede reparar de un toque.
+        const roto=!!linea(lin).huerfana||
+          (!usaDis(lin)&&g.keys.some(k=>k.split('|')[0]!==DGEN));
         return `<div style="margin-bottom:16px">
           <div style="display:flex;justify-content:space-between;align-items:baseline;
             padding:0 0 6px;border-bottom:2px solid var(--linea)">
             <b style="font-size:14px">${esc(tit)}</b>
             <span style="font-size:12px;color:var(--suave)">${tot} und ·
               ${cop(linea(lin).precio)} c/u</span></div>
+          ${roto&&admin()?`<div class="aviso warn" style="margin:7px 0 4px">
+            Estas ${tot} camisetas quedaron guardadas con una línea vieja o con un
+            diseño suelto. Quedan bien con un toque.
+            <button class="b g chico" style="margin-top:7px"
+              onclick="A.repararGrupo('${gk}')">Reparar este grupo</button></div>`:''}
+          ${usaDis(lin)&&admin()?`<div style="font-size:12px;color:var(--suave);margin:4px 0 2px">
+            ¿Quedaron con el diseño equivocado? Toca el número y escoge
+            <b>cambiar de diseño</b>.</div>`:''}
           <div class="scroll"><table class="malla">
             <tr><th>Color</th>${tals.map(x=>`<th class="n">${esc(x.n)}</th>`).join('')}
               <th class="n">Total</th></tr>
             ${cols.map(c=>`<tr>
               <td style="white-space:nowrap"><span class="punto" style="background:${c.hex}"></span> ${esc(c.n)}</td>
-              ${tals.map(x=>{const k=kk(c.id,x.id), q=invT(k).cant;
+              ${tals.map(x=>{const k=cel(c.id,x.id), q=k?invT(k).cant:0;
                 if(!q) return '<td class="n"><span style="color:#e4e4e7">·</span></td>';
                 return `<td class="n">${admin()
                   ?`<button class="celda" onclick="A.ajustarInv('T','${k}')"
@@ -2261,17 +2409,22 @@ function lisasDisp(){
     <b>Lisas disponibles:</b><br>${hay.map(([k,v])=>esc(nomL(k))+' · '+v.cant).join('<br>')}</div>`;
 }
 function vVender(){
-  const q=(tmp.busq||'').toLowerCase();
-  const lista=Object.entries(S.terminados).filter(([k,v])=>v.cant>0)
-    .filter(([k])=>!q||nomT(k).toLowerCase().includes(q));
   const ls=lineasCarrito();
   const total=ls.reduce((s,l)=>s+l.neto,0);
   const unid=ls.reduce((s,l)=>s+l.cant,0);
   const tv=tmp.tipoVenta||'DETAL';
+  /* El ticket se ve abierto por defecto; mientras busca se achica solo para
+     dejar ver las camisetas, salvo que él lo abra o lo cierre a mano. */
+  const abierto=tmp.carAbierto===undefined?!tmp.busq:tmp.carAbierto!==false;
 
   return `
-  <input placeholder="Buscar diseño, color o talla" value="${esc(tmp.busq||'')}"
-    oninput="tmp.busq=this.value;pintarLista()" style="margin-bottom:8px">
+  <div class="fila" style="margin-bottom:8px">
+    <input id="vBusq" placeholder="Escribe: spi negro 8" value="${esc(tmp.busq||'')}"
+      oninput="tmp.busq=this.value;pintarLista()"
+      onkeydown="if(event.key==='Enter'){event.preventDefault();A.agregarUnico()}">
+    ${tmp.busq?`<button class="b g chico" style="flex:0 0 auto"
+      onclick="tmp.busq='';pintar()">✕</button>`:''}
+  </div>
   <div style="display:flex;border:1px solid #d4d4d8;border-radius:12px;overflow:hidden;margin-bottom:12px">
     ${[['DETAL','Detal'],['MAYOR','Por mayor'],['PACK','Pack x3']].map(([t,n])=>
       `<button class="b chico" style="flex:1;border-radius:0;width:auto;
@@ -2302,34 +2455,20 @@ function vVender(){
   </div>`:`<button class="b g" style="margin-bottom:12px" onclick="tmp.xm=true;pintar()">
     ✂ Estampar al momento</button>`}
 
-  <div style="display:flex;justify-content:flex-end;margin-bottom:6px">
-    <button onclick="tmp.parrilla=(tmp.parrilla===false);pintar()"
-      style="border:0;background:none;color:var(--suave);font-size:12px;cursor:pointer">
-      ${tmp.parrilla===false?'▦ Ver como parrilla':'▤ Ver como tarjetas'}</button>
-  </div>
-  <div id="listaProd" style="display:grid;grid-template-columns:1fr 1fr;gap:10px;
-    padding-bottom:${ls.length?(tmp.carAbierto?'56vh':'150px'):'0'}">
-    ${(!tmp.busq&&tmp.parrilla!==false)?`<div style="grid-column:1/-1">${parrilla()}</div>`
-      :(lista.length?lista.map(([k,v])=>{
-      const [,lin,c,t]=k.split('|'), [d]=k.split('|');
-      return `<button class="prod" onclick="A.agregar('${k}')">
-        <div><span class="punto" style="background:${color(c).hex}"></span>
-          ${usaDis(lin)?`<span class="tag">${esc(linea(lin).n)}</span>`:''}</div>
-        <div style="font-weight:700;font-size:14px;margin-top:5px;line-height:1.2">${esc(usaDis(lin)?diseno(d).n:linea(lin).n)}</div>
-        <div style="font-size:12px;color:var(--suave)">${esc(color(c).n)} · Talla ${esc(talla(t).n)}</div>
-        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-top:7px">
-          <b class="cifra">${cop(precioPor(lin,1,tv))}</b>
-          <span class="cifra" style="font-size:12px;color:var(--suave)">${v.cant} und</span></div>
-      </button>`}).join('')
-      :'<div class="vacio" style="grid-column:1/-1">No hay camisetas disponibles con ese criterio.</div>')}
+  <div id="listaProd" style="padding-bottom:${ls.length?(abierto?'60vh':'150px'):'0'}">
+    ${tmp.busq?filasBusq(tmp.busq,tv):parrilla()}
   </div>
 
   ${ls.length?`<div class="barra">
-    <div id="carLineas" style="${tmp.carAbierto?'':'display:none'}">
-    ${ls.map(l=>`<div class="item">
+    <div id="carLineas" style="${abierto?'':'display:none'}">
+    ${ls.map(l=>{const[d,lin,c,t]=l.k.split('|');
+      return `<div class="item" style="align-items:flex-start">
       <div style="flex:1;min-width:0">
-        <div class="t" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${
-          l.xm?'<span class="tag" style="margin-right:4px">✂ al momento</span>':''}${esc(nomT(l.k))}</div>
+        <div class="t">${l.xm?'<span class="tag" style="margin-right:4px">✂ al momento</span>':''}
+          <span class="punto" style="background:${color(c).hex}"></span>
+          ${esc(usaDis(lin)?diseno(d).n:linea(lin).n)}
+          ${usaDis(lin)?`<span class="tag">${esc(linea(lin).n)}</span>`:''}</div>
+        <div class="s">${esc(color(c).n)} · Talla ${esc(talla(t).n)}</div>
         <button onclick="A.precio('${l.id}')" style="border:0;background:none;padding:2px 0;
           font-size:12px;color:${l.origen==='manual'?'var(--tinta)':'var(--suave)'};
           font-variant-numeric:tabular-nums;font-weight:${l.origen==='manual'?'700':'400'}">
@@ -2342,7 +2481,7 @@ function vVender(){
           onclick="A.quitar('${l.id}')" title="Quitar del carrito">✕</button>
       </div>
       <div class="m cifra" style="min-width:74px">${cop(l.neto)}</div>
-    </div>`).join('')}
+    </div>`}).join('')}
 
     ${tv==='PACK'&&Object.keys(tmp._pack||{}).length?`<div style="background:#fafafa;border-radius:12px;
       padding:10px;font-size:12.5px;color:var(--suave);margin-top:6px">
@@ -2358,14 +2497,14 @@ function vVender(){
     </div>`:''}
 
     </div>
-    <div class="item" style="border-top:${tmp.carAbierto?'1px solid var(--linea)':'0'};border-bottom:0">
+    <div class="item" style="border-top:${abierto?'1px solid var(--linea)':'0'};border-bottom:0">
       <div><div class="t">
-        <button onclick="tmp.carAbierto=!tmp.carAbierto;pintar()"
+        <button onclick="tmp.carAbierto=!(${abierto});pintar()"
           style="border:0;background:none;padding:0;font:inherit;font-weight:700;cursor:pointer;
-          color:var(--texto)">${tmp.carAbierto?'▾':'▸'} ${unid} unidad${unid===1?'':'es'}</button>
+          color:var(--texto)">${abierto?'▾':'▸'} ${unid} unidad${unid===1?'':'es'}</button>
         <button onclick="A.vaciar()" style="border:0;background:none;padding:0 0 0 8px;
           color:var(--suave);font-size:12.5px;cursor:pointer">Vaciar ✕</button></div>
-        ${!tmp.carAbierto?`<div style="font-size:12px;color:var(--suave);
+        ${!abierto?`<div style="font-size:12px;color:var(--suave);
           white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:60vw">${
           esc(ls.map(l=>l.cant+'× '+nomT(l.k)).join(' · '))}</div>`:''}
         <button onclick="A.totalCombo()" style="border:0;background:none;padding:2px 0;
@@ -2382,6 +2521,16 @@ function vVender(){
     </div>
 
     ${tmp.cobrando?`
+      <div class="aviso" style="border-left-color:var(--cian);color:var(--texto);margin:4px 0 12px">
+        <div style="font-weight:700;margin-bottom:4px">Repasa el ticket</div>
+        ${ls.map(l=>`<div style="display:flex;justify-content:space-between;gap:10px;
+          font-size:13.5px;padding:3px 0;border-bottom:1px solid #F0F2F4">
+          <span><b>${l.cant}×</b> ${esc(nomT(l.k))}</span>
+          <span class="cifra">${cop(l.neto)}</span></div>`).join('')}
+        <div style="display:flex;justify-content:space-between;padding-top:6px;font-weight:700">
+          <span>${unid} camiseta${unid===1?'':'s'}</span>
+          <span class="cifra">${cop(total)}</span></div>
+      </div>
       <label>Cliente</label>
       <div class="fila">
         <select id="vCliente">${S.clientes.map(c=>
@@ -2427,65 +2576,104 @@ function vVender(){
     `:`<button class="b" onclick="tmp.cobrando=true;pintar()">Cobrar ${cop(total)}</button>`}
   </div>`:''}`;
 }
-/* Parrilla rápida: un grupo (diseño+línea) a la vez, colores en filas y
-   tallas en columnas. Un toque suma una al carrito.                     */
+/* Parrilla rápida en dos pasos: primero la LÍNEA, después el diseño (solo si
+   esa línea maneja diseños). Colores en filas, tallas en columnas; un toque
+   suma una al carrito. Nada de tiras horizontales larguísimas.           */
 function parrilla(){
   const tv=tmp.tipoVenta||'DETAL';
-  const hay=Object.entries(S.terminados).filter(([k,v])=>v.cant>0);
-  if(!hay.length) return '<div class="vacio">No hay camisetas estampadas.</div>';
+  const G=gruposT();
+  if(!Object.keys(G).length) return '<div class="vacio">No hay camisetas estampadas.</div>';
 
-  const grupos={};
-  hay.forEach(([k])=>{const p=k.split('|');
-    grupos[p[0]+'|'+p[1]]=(grupos[p[0]+'|'+p[1]]||0)+invT(k).cant});
-  const claves=Object.keys(grupos);
-  let g=tmp.grupo&&grupos[tmp.grupo]?tmp.grupo:claves[0];
-  const [gd,gl]=g.split('|');
-  const nombre=x=>{const [d,l]=x.split('|');
-    return (usaDis(l)?diseno(d).n+' · ':'')+linea(l).n};
+  /* Paso 1 · líneas */
+  const L={};
+  Object.values(G).forEach(g=>{const x=L[g.lin]=L[g.lin]||{cant:0,gs:[]};
+    x.cant+=g.cant; x.gs.push(g.gk)});
+  /* Las líneas de verdad van primero, en el orden de Ajustes; las huérfanas
+     se van al final para que no estorben al vender. */
+  const pos=x=>{const i=S.lineas.findIndex(y=>y.id===x);return i<0?99:i};
+  const lins=Object.keys(L).sort((a,b)=>pos(a)-pos(b)||linea(a).n.localeCompare(linea(b).n));
+  const gl=(tmp.vLin&&L[tmp.vLin])?tmp.vLin:lins[0];
+
+  /* Paso 2 · diseños de esa línea */
+  const gs=L[gl].gs.sort((a,b)=>nomGrupo(a).localeCompare(nomGrupo(b)));
+  /* Si no ha escogido, abre en el diseño que más camisetas tiene */
+  const gk=(tmp.grupo&&gs.includes(tmp.grupo))?tmp.grupo
+    :gs.slice().sort((a,b)=>G[b].cant-G[a].cant)[0];
+  const g=G[gk];
 
   const enCarrito=k=>((tmp.carrito||[]).find(c=>c.id===k)||{}).cant||0;
-  const cols=S.colores.filter(c=>S.tallas.some(t=>invT(kT(gd,gl,c.id,t.id)).cant>0));
-  const tals=tallasOrd().filter(t=>S.colores.some(c=>invT(kT(gd,gl,c.id,t.id)).cant>0));
+  const cel=(c,t)=>g.cel[c+'|'+t];
+  const cols=S.colores.filter(c=>S.tallas.some(t=>cel(c.id,t.id)));
+  const tals=tallasOrd().filter(t=>S.colores.some(c=>cel(c.id,t.id)));
+  /* En el segundo paso la línea ya está escogida: basta el nombre del diseño */
+  const dis=x=>{const d=x.split('|')[0];
+    return d!=='*'?diseno(d).n:linea(x.split('|')[1]).n};
 
   return `
-  <div style="display:flex;gap:6px;overflow-x:auto;padding-bottom:8px;margin-bottom:4px">
-    ${claves.map(x=>`<button onclick="tmp.grupo='${x}';pintar()"
-      style="flex:0 0 auto;border:1px solid ${x===g?'var(--tinta)':'var(--linea)'};
-      background:${x===g?'var(--tinta)':'#fff'};color:${x===g?'#fff':'var(--texto)'};
-      border-radius:999px;padding:7px 13px;font-size:12.5px;font-weight:700;cursor:pointer">
-      ${esc(nombre(x))} <span style="opacity:.65">${grupos[x]}</span></button>`).join('')}
+  <div class="pasos">
+    ${lins.map(x=>`<button class="pchip ${x===gl?'on':''}"
+      onclick="tmp.vLin='${x}';tmp.grupo='';pintar()">${esc(linea(x).n)}
+      <span>${L[x].cant}</span></button>`).join('')}
   </div>
-  <div style="font-size:12px;color:var(--suave);margin-bottom:6px">
-    Toca una casilla para sumar una · ${cop(precioPor(gl,1,tv))} c/u</div>
+  ${gs.length>1?(gs.length>7?`
+    <select style="margin:7px 0 3px" onchange="tmp.grupo=this.value;pintar()">
+      ${gs.map(x=>`<option value="${x}" ${x===gk?'selected':''}>${esc(dis(x))} · ${G[x].cant} und</option>`).join('')}
+    </select>`:`
+    <div class="pasos chico">
+      ${gs.map(x=>`<button class="pchip ${x===gk?'on':''}"
+        onclick="tmp.grupo='${x}';pintar()">${esc(dis(x))}
+        <span>${G[x].cant}</span></button>`).join('')}
+    </div>`):''}
+  <div style="font-size:12px;color:var(--suave);margin:7px 0 6px">
+    <b>${esc(nomGrupo(gk))}</b> · ${g.cant} und · toca una casilla para sumar una ·
+    ${cop(precioPor(g.lin,1,tv))} c/u</div>
   <div class="scroll"><table class="malla">
     <tr><th>Color</th>${tals.map(t=>`<th class="n">${esc(t.n)}</th>`).join('')}</tr>
     ${cols.map(c=>`<tr>
       <td style="white-space:nowrap"><span class="punto" style="background:${c.hex}"></span> ${esc(c.n)}</td>
-      ${tals.map(t=>{const k=kT(gd,gl,c.id,t.id), v=invT(k).cant, y=enCarrito(k);
-        if(!v) return '<td class="n"><span style="color:#e4e4e7">·</span></td>';
+      ${tals.map(t=>{const k=cel(c.id,t.id);
+        if(!k) return '<td class="n"><span style="color:#e4e4e7">·</span></td>';
+        const v=invT(k).cant, y=enCarrito(k);
         return `<td class="n"><button class="celda" onclick="A.agregar('${k}')"
           style="${y?'background:var(--tinta);color:#fff':''}">${y?y+'/'+v:v}</button></td>`}).join('')}
     </tr>`).join('')}
   </table></div>`;
 }
+/* Resultados del buscador: un renglón por referencia, con − y + al lado para
+   no tener que bajar al carrito a corregir la cantidad.                   */
+function filasBusq(q,tv){
+  const lista=Object.entries(S.terminados).filter(([k,v])=>v.cant>0)
+    .filter(([k])=>calza(nomT(k),q))
+    .sort((a,b)=>nomT(a[0]).localeCompare(nomT(b[0])));
+  if(!lista.length) return `<div class="card"><div class="vacio">
+    Nada con "${esc(q)}". Escribe menos letras: <b>spi</b>, <b>negro</b>, <b>8</b>…</div></div>`;
+  const enCar=k=>((tmp.carrito||[]).find(c=>c.id===k)||{}).cant||0;
+  const tope=40;
+  return `<div class="card" style="padding:4px 13px">
+    ${lista.slice(0,tope).map(([k,v])=>{
+      const [d,l,c,t]=k.split('|'), y=enCar(k);
+      return `<div class="item" style="align-items:center">
+        <div style="flex:1;min-width:0">
+          <div class="t"><span class="punto" style="background:${color(c).hex}"></span>
+            ${esc(usaDis(l)?diseno(d).n:linea(l).n)}
+            ${usaDis(l)?`<span class="tag">${esc(linea(l).n)}</span>`:''}</div>
+          <div class="s">${esc(color(c).n)} · T${esc(talla(t).n)} ·
+            ${cop(precioPor(l,1,tv))} · quedan ${v.cant}</div></div>
+        <div style="display:flex;align-items:center;gap:6px;flex:0 0 auto">
+          ${y?`<button class="b g chico" style="min-height:36px;padding:0 11px"
+              onclick="A.cant('${k}',-1)">−</button>
+            <b class="cifra" style="min-width:16px;text-align:center">${y}</b>`:''}
+          <button class="b chico" style="min-height:36px;padding:0 14px"
+            onclick="A.agregar('${k}')">+</button></div>
+      </div>`}).join('')}
+    ${lista.length>tope?`<div class="s" style="padding:9px 0">
+      Hay ${lista.length} referencias con eso. Escribe un poco más.</div>`:''}
+  </div>`;
+}
 function pintarLista(){
-  const q=(tmp.busq||'').toLowerCase();
   const cont=$('listaProd'); if(!cont)return;
   const tv=tmp.tipoVenta||'DETAL';
-  if(!q&&tmp.parrilla!==false){ cont.innerHTML=`<div style="grid-column:1/-1">${parrilla()}</div>`; return }
-  const lista=Object.entries(S.terminados).filter(([k,v])=>v.cant>0)
-    .filter(([k])=>!q||nomT(k).toLowerCase().includes(q));
-  cont.innerHTML=lista.length?lista.map(([k,v])=>{
-    const p=k.split('|');
-    return `<button class="prod" onclick="A.agregar('${k}')">
-      <div><span class="punto" style="background:${color(p[2]).hex}"></span>
-        ${usaDis(p[1])?`<span class="tag">${esc(linea(p[1]).n)}</span>`:''}</div>
-      <div style="font-weight:700;font-size:14px;margin-top:5px;line-height:1.2">${esc(usaDis(p[1])?diseno(p[0]).n:linea(p[1]).n)}</div>
-      <div style="font-size:12px;color:var(--suave)">${esc(color(p[2]).n)} · Talla ${esc(talla(p[3]).n)}</div>
-      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-top:7px">
-        <b class="cifra">${cop(precioPor(p[1],1,tv))}</b>
-        <span class="cifra" style="font-size:12px;color:var(--suave)">${v.cant} und</span></div></button>`}).join('')
-    :'<div class="vacio" style="grid-column:1/-1">Nada coincide con esa búsqueda.</div>';
+  cont.innerHTML=tmp.busq?filasBusq(tmp.busq,tv):parrilla();
 }
 
 /* ── Pedidos ────────────────────────────────────────────── */
@@ -3213,7 +3401,13 @@ function pintar(){
   const cuerpo={inicio:vInicio,vender:vVender,inventario:vInventario,taller:vTaller,compras:vCompras,
     facturas:vFacturas,cartera:vCartera,caja:vCaja,reportes:vReportes,ajustes:vAjustes,
     pedidos:vPedidos}[tab];
+  /* Si estaba escribiendo en una casilla, vuelve a ella con el cursor donde
+     iba: así agregar desde el buscador no obliga a tocar y escribir de nuevo. */
+  const act=document.activeElement, fid=act&&act.id, cur=fid&&act.selectionStart;
   $('vista').innerHTML=cuerpo();
+  if(fid){const e=$(fid);
+    if(e&&e.focus){ e.focus({preventScroll:true});
+      try{ if(cur!=null&&e.setSelectionRange) e.setSelectionRange(cur,cur) }catch(_){} }}
   pintarMsg();
   if(document.getElementById('qPista')) pistaPedido();
 }
