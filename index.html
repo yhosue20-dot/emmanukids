@@ -801,7 +801,12 @@ A.guardarProd=()=>{
   const f=val('pFecha')||hoy(), est=nval('pEst'), mo=nval('pMO'), qId=val('pCuenta');
   const procesadas=filas.reduce((s,r)=>s+r.cant,0);
   const buenas=filas.reduce((s,r)=>s+(r.cant-r.merma),0);
-  if(buenas<=0) return decir('La orden no deja unidades buenas','err');
+  if(procesadas<=0) return decir('Agrega qué camisetas vas a estampar','err');
+  if(buenas<=0){
+    const perdida=filas.reduce((s,r)=>s+costoL(r.k)*r.cant,0)+est*procesadas+mo;
+    if(!confirm('Se dañaron las '+procesadas+' y no queda ninguna buena.\n\n'+
+      'Salen de bodega y todo el costo ('+cop(perdida)+') se va a pérdida.\n\n¿Registro así?')) return;
+  }
   correr(()=>{
     const ref='OP'+(S.consOrden+1);
     PEND.cfg={consOrden:S.consOrden+1};
@@ -809,7 +814,7 @@ A.guardarProd=()=>{
     filas.forEach(r=>{costoLisas+=salida('L',r.k,r.cant,{f,t:'PRODUCCION',ref})*r.cant});
     const costoEst=est*procesadas;
     const totalCosto=costoLisas+costoEst+mo;
-    const cu=totalCosto/buenas;              // la merma la absorben las buenas
+    const cu=buenas>0?totalCosto/buenas:0;   // la merma la absorben las buenas
     filas.forEach(r=>{
       const b=r.cant-r.merma; if(b<=0) return;
       const [c,t]=r.k.split('|');
@@ -818,7 +823,8 @@ A.guardarProd=()=>{
     const desembolso=costoEst+mo;
     if(desembolso>0&&qId) mover(qId,'EGRESO',desembolso,'Producción '+ref,f);
     asiento(f,'Producción '+ref,[
-      {cuenta:'1430 Inventario estampadas',d:totalCosto},
+      // Si no quedó ninguna buena, el costo entero es pérdida, no inventario
+      {cuenta:buenas>0?'1430 Inventario estampadas':'5299 Pérdida de inventario',d:totalCosto},
       {cuenta:'1435 Inventario lisas',c:costoLisas},
       {cuenta:'1105 Caja y bancos',c:desembolso}]);
     const disUsados=[...new Set(filas.map(r=>r.dis||dId))];
@@ -827,7 +833,11 @@ A.guardarProd=()=>{
       lineas:linUsadas,filas,est,mo,
       procesadas,buenas,merma:procesadas-buenas,costoLisas,costoTotal:totalCosto,cu});
     return cu;
-  },[],cu=>{tmp.prod=[];return num(buenas)+' camisetas listas · costo real '+cop(cu)+' c/u'});
+  },[],cu=>{tmp.prod=[];
+    return buenas>0
+      ?num(buenas)+' camisetas listas · costo real '+cop(cu)+' c/u'+
+        (procesadas-buenas>0?' · '+num(procesadas-buenas)+' dañadas':'')
+      :'Se registró la pérdida de '+num(procesadas)+' camisetas'});
 };
 
 /* --- Inventario inicial (una sola vez, al arrancar) --- */
@@ -1957,7 +1967,9 @@ function textoCierre(){
   t+=fd.length+' factura'+(fd.length===1?'':'s')+' · '+und+' camiseta'+(und===1?'':'s')+'\n';
   t+='Costo: -'+cop(costo)+'\n';
   t+='Gastos: -'+cop(gasto)+'\n';
-  t+='*Ganancia: '+cop(venta-costo-gasto)+'*\n';
+  const perd=perdidas(d);
+  if(perd) t+='Pérdidas (dañadas): -'+cop(perd)+'\n';
+  t+='*Ganancia: '+cop(venta-costo-gasto-perd)+'*\n';
   if(fia) t+='Quedó fiado hoy: '+cop(fia)+'\n';
   t+='\nEntró: '+cop(ing)+'  |  Salió: '+cop(egr)+'\n';
   t+='\n*Cuánto debe haber en cada cuenta*\n';
@@ -2161,7 +2173,8 @@ function vInicio(){
   const valorInv=Object.values(S.lisas).reduce((s,i)=>s+i.valor,0)+
                  Object.values(S.terminados).reduce((s,i)=>s+i.valor,0);
   const gm=S.gastos.filter(g=>g.f.startsWith(mes)).reduce((s,g)=>s+g.monto,0);
-  const utilMes=sum(vm,'util')-gm;
+  const pm=perdidas(mes);
+  const utilMes=sum(vm,'util')-gm-pm;
 
   const top={};
   vm.forEach(f=>f.det.forEach(d=>{top[d.k]=(top[d.k]||0)+d.cant}));
@@ -2176,7 +2189,7 @@ function vInicio(){
       <div class="et">Ventas del mes</div><div class="v cifra" style="color:var(--cielo)">${cop(sum(vm,'total'))}</div>
       <div class="d">${vm.length} facturas · ver ▸</div></div>
     <div class="kpi"><div class="et">Utilidad del mes</div><div class="v cifra" style="color:${utilMes>=0?'var(--ok)':'var(--tinta)'}">${cop(utilMes)}</div>
-      <div class="d">después de ${cop(gm)} en gastos</div></div>
+      <div class="d">después de ${cop(gm)} en gastos${pm?' y '+cop(pm)+' en pérdidas':''}</div></div>
     <div class="kpi"><div class="et">Por cobrar</div><div class="v cifra" style="color:var(--sol)">${cop(sum(cartera,'saldo'))}</div>
       <div class="d">${vencida.length?cop(sum(vencida,'saldo'))+' vencido':'al día'}</div></div>
   </div>
@@ -2208,6 +2221,16 @@ function vInicio(){
   </div>
 
   `;
+}
+
+/* Pérdidas: camisetas que se dañaron o se perdieron. No son gastos (no sale
+   plata), por eso van en su propia línea. Salen de la cuenta 5299, que es la
+   que usan las tandas perdidas y los ajustes de inventario hacia abajo. */
+function perdidas(desde){
+  return S.asientos.filter(a=>a.f&&a.f.indexOf(desde)===0)
+    .reduce((s,a)=>s+(a.lineas||[])
+      .filter(l=>String(l.cuenta).indexOf('5299')===0)
+      .reduce((x,l)=>x+(l.d||0)-(l.c||0),0),0);
 }
 
 /* Cuánto vale el negocio hoy: lo que hay, menos lo que se debe.
@@ -2348,8 +2371,12 @@ function vTaller(){
     </div>
     <label>Se paga desde</label><select id="pCuenta">${optCuenta()}</select>
 
-    ${filas.length?`<div class="aviso ok" style="margin-top:12px" id="costoPrev">
-      ${num(buenas)} buenas de ${num(proc)} · costo real <b>${cop(cuEstimado)}</b> cada una</div>`:''}
+    ${filas.length?`<div class="aviso ${buenas>0?'ok':'warn'}" style="margin-top:12px" id="costoPrev">
+      ${buenas>0
+        ?num(buenas)+' buenas de '+num(proc)+' · costo real <b>'+cop(cuEstimado)+'</b> cada una'+
+          (proc-buenas>0?' · '+num(proc-buenas)+' dañadas se van al costo':'')
+        :'Se dañaron las '+num(proc)+' · se registra una pérdida de <b>'+
+          cop(costoLisas+est*proc+mo)+'</b>'}</div>`:''}
     <button class="b" onclick="A.guardarProd()">Registrar producción</button>
   </div>
 
@@ -2390,7 +2417,12 @@ function pintarSoloCosto(){
   const proc=filas.reduce((s,r)=>s+r.cant,0), buenas=filas.reduce((s,r)=>s+(r.cant-r.merma),0);
   const costoLisas=filas.reduce((s,r)=>s+costoL(r.k)*r.cant,0);
   const cu=buenas>0?(costoLisas+nval('pEst')*proc+nval('pMO'))/buenas:0;
-  e.innerHTML=num(buenas)+' buenas de '+num(proc)+' · costo real <b>'+cop(cu)+'</b> cada una';
+  e.className='aviso '+(buenas>0?'ok':'warn');
+  e.innerHTML=buenas>0
+    ?num(buenas)+' buenas de '+num(proc)+' · costo real <b>'+cop(cu)+'</b> cada una'+
+      (proc-buenas>0?' · '+num(proc-buenas)+' dañadas se van al costo':'')
+    :'Se dañaron las '+num(proc)+' · se registra una pérdida de <b>'+
+      cop(costoLisas+nval('pEst')*proc+nval('pMO'))+'</b>';
 }
 
 /* ── Inventario ─────────────────────────────────────────── */
@@ -3268,6 +3300,7 @@ function vCaja(){
   const gastoD=gdia.reduce((s,g)=>s+g.monto,0);
   const undD=fdia.reduce((s,f)=>s+f.det.reduce((x,y)=>x+y.cant,0),0);
   const fiadoD=fdia.reduce((s,f)=>s+f.saldo,0);
+  const perdD=perdidas(d);                      // camisetas dañadas ese día
   // Entradas y salidas de ese día, cuenta por cuenta
   const porCta=S.cuentas.map(q=>{
     const m=mov.filter(x=>x.cuenta===q.id);
@@ -3312,10 +3345,13 @@ function vCaja(){
         return pp?`<div class="s">incluye ${cop(pp)} que pagó otra persona ·
           esa plata no salió de tus cuentas, quedó como deuda</div>`:''})()}</div>
       <div class="m cifra">−${cop(gastoD)}</div></div>
+    ${perdD?`<div class="item"><div class="t">Pérdidas
+      <div class="s">camisetas dañadas o perdidas · no es plata que salió</div></div>
+      <div class="m cifra" style="color:var(--tinta)">−${cop(perdD)}</div></div>`:''}
     <div class="item" style="border-top:1px solid var(--linea)">
       <div class="t"><b>Ganancia del día</b></div>
-      <div class="m cifra" style="font-size:19px;color:${ventaD-costoD-gastoD>=0?'var(--ok)':'var(--tinta)'}">
-        <b>${cop(ventaD-costoD-gastoD)}</b></div></div>
+      <div class="m cifra" style="font-size:19px;color:${ventaD-costoD-gastoD-perdD>=0?'var(--ok)':'var(--tinta)'}">
+        <b>${cop(ventaD-costoD-gastoD-perdD)}</b></div></div>
     ${fiadoD?`<div class="item"><div class="t">Quedó fiado hoy</div>
       <div class="m cifra" style="color:var(--tinta)">${cop(fiadoD)}</div></div>`:''}
 
@@ -3701,6 +3737,14 @@ function vReportes(){
     <div class="item"><div class="t">Producción</div>
       <div class="m cifra">${num(os.reduce((s,o)=>s+o.buenas,0))} und
         <div class="s">${num(os.reduce((s,o)=>s+o.merma,0))} dañadas</div></div></div>
+    ${(()=>{const pl=S.asientos.filter(a=>a.f>=d&&a.f<=ha)
+        .flatMap(a=>(a.lineas||[]).filter(l=>String(l.cuenta).indexOf('5299')===0)
+          .map(l=>({f:a.f,c:a.concepto,m:(l.d||0)-(l.c||0)}))).filter(x=>x.m>0);
+      if(!pl.length) return '';
+      const tp=pl.reduce((s2,x)=>s2+x.m,0);
+      return `<div class="item"><div class="t">Pérdidas
+        <div class="s">${pl.map(x=>fecha(x.f)+' · '+esc(x.c)).join('<br>')}</div></div>
+        <div class="m cifra" style="color:var(--tinta)">−${cop(tp)}</div></div>`})()}
     <div class="item"><div class="t">Facturas emitidas</div><div class="m cifra">${fs.length}</div></div>
     <div class="item"><div class="t">Ticket promedio</div>
       <div class="m cifra">${cop(fs.length?venta/fs.length:0)}</div></div>
