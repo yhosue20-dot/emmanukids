@@ -1992,6 +1992,7 @@ A.imprimirCierre=()=>{
   const gd=S.gastos.filter(g=>g.f===d);
   const venta=fd.reduce((s,f)=>s+f.total,0), costo=fd.reduce((s,f)=>s+f.costo,0);
   const gasto=gd.reduce((s,g)=>s+g.monto,0);
+  const perdI=perdidas(d);
   const und=fd.reduce((s,f)=>s+f.det.reduce((x,y)=>x+y.cant,0),0);
   const fia=fd.reduce((s,f)=>s+f.saldo,0);
   const ctas=S.cuentas.map(q=>{
@@ -2013,7 +2014,8 @@ A.imprimirCierre=()=>{
       ${fila('Vendido',venta)}
       ${fila('Costo de lo vendido',costo,1)}
       ${fila('Gastos del día',gasto,1)}
-      <tr class="htot"><td>GANANCIA DEL DÍA</td><td class="hn">${cop(venta-costo-gasto)}</td></tr>
+      ${perdI?fila('Pérdidas (dañadas)',perdI,1):''}
+      <tr class="htot"><td>GANANCIA DEL DÍA</td><td class="hn">${cop(venta-costo-gasto-perdI)}</td></tr>
       ${fia?fila('Quedó fiado hoy',fia):''}
     </table>
     <table class="hcie" style="margin-top:12px">
@@ -3598,6 +3600,11 @@ function vReportes(){
   const venta=fs.reduce((s,f)=>s+f.total,0);
   const costo=fs.reduce((s,f)=>s+f.costo,0);
   const gasto=gs.reduce((s,g)=>s+g.monto,0);
+  // Camisetas dañadas o perdidas en el periodo (cuenta 5299)
+  const perd=S.asientos.filter(a=>a.f>=d&&a.f<=ha)
+    .reduce((s2,a)=>s2+(a.lineas||[])
+      .filter(l=>String(l.cuenta).indexOf('5299')===0)
+      .reduce((x,l)=>x+(l.d||0)-(l.c||0),0),0);
 
   const porProd={}, porLinea={};
   fs.forEach(f=>f.det.forEach(x=>{
@@ -3665,8 +3672,12 @@ function vReportes(){
       <div class="m cifra"><b>${cop(venta-costo)}</b>
         <div class="s">${venta?((venta-costo)/venta*100).toFixed(1):0}% de margen</div></div></div>
     <div class="item"><div class="t">Gastos</div><div class="m cifra">−${cop(gasto)}</div></div>
+    ${perd?`<div class="item"><div class="t">Pérdidas
+      <div class="s">camisetas dañadas o perdidas</div></div>
+      <div class="m cifra" style="color:var(--tinta)">−${cop(perd)}</div></div>`:''}
     <div class="item"><div class="t"><b>Utilidad neta</b></div>
-      <div class="m cifra" style="font-size:18px"><b>${cop(venta-costo-gasto)}</b></div></div>
+      <div class="m cifra" style="font-size:18px;color:${venta-costo-gasto-perd>=0?'var(--ok)':'var(--tinta)'}">
+        <b>${cop(venta-costo-gasto-perd)}</b></div></div>
   </div>
 
   <div class="card"><h3>Utilidad por línea</h3>
