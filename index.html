@@ -480,7 +480,7 @@ async function tx(fn,extras=[]){
     S.consecutivo=g.consecutivo||0; S.consCompra=g.consCompra||0; S.consOrden=g.consOrden||0;
     S.consPedido=g.consPedido||0; S.consDeuda=g.consDeuda||0;
 
-    PEND={docs:[],updates:[],cfg:null};
+    PEND={docs:[],updates:[],cfg:null,borrar:[]};
     const r=fn(ex);
 
     t.set(rInv,{lisas:S.lisas,terminados:S.terminados});
@@ -489,6 +489,7 @@ async function tx(fn,extras=[]){
     PEND.docs.forEach(d=>t.set(doc(collection(db,d.col)),
       {...d.data,creado:Date.now(),por:yo.nombre,uid:yo.uid}));
     PEND.updates.forEach(u=>t.update(u.ref,u.data));
+    (PEND.borrar||[]).forEach(r=>t.delete(r));
     return r;
   });
 }
@@ -1324,6 +1325,9 @@ A.anularDeuda=id=>{
       asiento(f,'Anulación deuda '+d0.ref,[
         {cuenta:ctaDeuda(d0.tipo),d:d0.monto},{cuenta:'1105 Caja y bancos',c:d0.monto}]);
     }else if(d0.origen==='GASTO'){
+      // El gasto que se creó con la deuda se borra, si no quedaría restando solo
+      const g=S.gastos.find(x=>x.deuda===d0.ref);
+      if(g) PEND.borrar.push(doc(db,'gastos',g._id));
       asiento(f,'Anulación deuda '+d0.ref,[
         {cuenta:ctaDeuda(d0.tipo),d:d0.monto},
         {cuenta:'51'+(d0.cat?'':'99')+' '+(d0.cat||'Otros gastos'),c:d0.monto}]);
@@ -1714,6 +1718,29 @@ A.guardarGasto=()=>{
     mover(qId,'EGRESO',m,d,f);
     asiento(f,'Gasto: '+d,[{cuenta:'51 '+cat,d:m},{cuenta:'1105 Caja y bancos',c:m}]);
   },[],()=>{$('gDesc').value='';$('gMonto').value='';return 'Gasto de '+cop(m)+' registrado'});
+};
+
+/* Borra un gasto mal registrado: devuelve la plata a la cuenta de donde salió
+   y lo saca de la lista. Si nunca salió plata (lo pagó un socio) solo lo borra. */
+A.borrarGasto=id=>{
+  const g=S.gastos.find(x=>x._id===id); if(!g)return;
+  const dsc=g.desc||g.concepto||g.cat||'gasto';
+  if(!confirm('Borrar este gasto?\n\n'+dsc+' · '+cop(g.monto)+
+    (g.cuenta?'\n\nLa plata vuelve a '+cuenta(g.cuenta).n+'.'
+             :'\n\nNo movió ninguna cuenta, solo se borra.'))) return;
+  const rG=doc(db,'gastos',id);
+  correr(()=>{
+    const f=hoy();
+    PEND.borrar.push(rG);
+    if(g.cuenta){
+      mover(g.cuenta,'INGRESO',g.monto,'Se borró el gasto: '+dsc,f);
+      asiento(f,'Anulación gasto · '+dsc,[
+        {cuenta:'1105 Caja y bancos',d:g.monto},{cuenta:'51 '+(g.cat||'Otros'),c:g.monto}]);
+    }else{
+      asiento(f,'Anulación gasto · '+dsc,[
+        {cuenta:'3115 Capital',d:g.monto},{cuenta:'51 '+(g.cat||'Otros'),c:g.monto}]);
+    }
+  },[],()=>'Gasto borrado'+(g.cuenta?' · la plata volvió a '+cuenta(g.cuenta).n:''));
 };
 
 /* --- Ajustes --- */
@@ -3343,6 +3370,23 @@ function vCaja(){
       `<div class="item" style="border-top:1px solid var(--linea);border-bottom:0">
         <div class="t"><b>Total del mes</b></div>
         <div class="m cifra" style="font-size:18px"><b>${cop(tot)}</b></div></div>`;
+    })()}
+  </div>
+
+  <div class="card"><h3>Gastos uno por uno</h3>
+    <p style="font-size:12.5px;color:var(--suave);margin:0 0 10px">
+      Si registraste un gasto que no era, bórralo aquí. La plata vuelve sola a la cuenta.</p>
+    ${(()=>{
+      const gs=S.gastos.slice(0,40);
+      if(!gs.length) return '<div class="vacio">Todavía no hay gastos.</div>';
+      return gs.map(g=>`<div class="item">
+        <div><div class="t">${esc(g.desc||g.concepto||g.cat||'Gasto')}</div>
+          <div class="s">${fecha(g.f)} · ${esc(g.cat||'Otros')} ·
+            ${g.cuenta?'salió de '+esc(cuenta(g.cuenta).n)
+                      :'<b>no salió de tus cuentas</b>'}</div>
+          ${admin()?`<button class="b g chico" style="margin-top:6px"
+            onclick="A.borrarGasto('${g._id}')">Borrar</button>`:''}</div>
+        <div class="m cifra">−${cop(g.monto)}</div></div>`).join('');
     })()}
   </div>
 
