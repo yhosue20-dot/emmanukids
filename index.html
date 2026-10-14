@@ -149,6 +149,13 @@ button.chico{min-height:38px;font-size:13.5px;width:auto;padding:0 13px}
 .aviso.err{background:var(--tinta-bg);color:#A80052}
 .aviso.ok{background:var(--ok-bg);color:var(--ok)}
 .aviso.warn{background:var(--amar-bg);color:#8A6000}
+
+/* Cuentas en dos columnas para que la caja no sea una lista eterna */
+.rejilla{display:grid;grid-template-columns:1fr 1fr;gap:0 16px;margin-bottom:4px}
+.celdaCta{display:flex;justify-content:space-between;gap:8px;padding:6px 0;
+  border-bottom:1px solid #F0F2F4;font-size:13.5px}
+.celdaCta span{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.celdaCta b{white-space:nowrap}
 .vacio{text-align:center;color:var(--suave);font-size:14px;padding:24px 8px}
 
 /* ── Tablas ───────────────────────────────────────────── */
@@ -399,7 +406,7 @@ function nuevo(){
     catGastos:['Arriendo','Servicios','Envíos','Transporte','Publicidad','Insumos taller','Otros'],
     lisas:{}, terminados:{},
     compras:[], ordenes:[], facturas:[], pagos:[], gastos:[], pedidos:[],
-    kardex:[], caja:[], asientos:[],
+    kardex:[], caja:[], asientos:[], deudas:[],
     consecutivo:0, stockMin:5
   };
 }
@@ -434,7 +441,7 @@ function escuchar(){
   S=nuevo();
   const listas=[['facturas',400],['compras',150],['ordenes',150],['gastos',300],
                 ['pagos',400],['kardex',400],['caja',400],['asientos',400],
-                ['pedidos',200]];
+                ['pedidos',200],['deudas',200]];
 
   onSnapshot(rCfg,d=>{ if(d.exists()) Object.assign(S,d.data());
     S.lineas.forEach(L=>{ if(!L.pack) L.pack={und:3,precio:Math.round(L.precio*3*0.87)} });
@@ -471,7 +478,7 @@ async function tx(fn,extras=[]){
     S.cuentas=(cS.data()||{}).lista||S.cuentas;
     const g=gS.data()||{};
     S.consecutivo=g.consecutivo||0; S.consCompra=g.consCompra||0; S.consOrden=g.consOrden||0;
-    S.consPedido=g.consPedido||0;
+    S.consPedido=g.consPedido||0; S.consDeuda=g.consDeuda||0;
 
     PEND={docs:[],updates:[],cfg:null};
     const r=fn(ex);
@@ -1209,6 +1216,117 @@ A.abonar=facId=>{
     mover(qId,'INGRESO',monto,'Abono '+d0.nro,f);
     asiento(f,'Abono '+d0.nro,[{cuenta:'1105 Caja y bancos',d:monto},{cuenta:'1305 Clientes',c:monto}]);
   },[ref],()=>'Abono de '+cop(monto)+' registrado en '+cuenta(qId).n);
+};
+
+/* ═══════ LO QUE YO DEBO (socios, proveedores, préstamos) ═══════ */
+/* La cuenta contable depende de a quién se le debe */
+const ctaDeuda=t=>t==='SOCIO'?'2305 Socios':'2205 Proveedores';
+/* Al cambiar el tipo o el destino de la plata la pantalla se repinta: antes
+   de repintar se guarda lo que ya escribió para no hacerlo escribir otra vez. */
+A.deudaCambia=(campo,v)=>{
+  tmp.dForm={quien:val('dQuien'),concepto:val('dConcepto'),monto:val('dMonto'),
+    fecha:val('dFecha'),limite:val('dLimite')};
+  tmp[campo]=v; pintar();
+};
+A.abrirDeuda=abrir=>{ tmp.nuevaDeuda=abrir; if(!abrir) tmp.dForm=null; pintar() };
+A.guardarDeuda=()=>{
+  const tipo=val('dTipo'), quien=val('dQuien').trim(), concepto=val('dConcepto').trim();
+  const monto=nval('dMonto'), limite=val('dLimite'), f=val('dFecha')||hoy();
+  const comoE=val('dComo');                       // PLATA o GASTO
+  const qId=val('dCuenta'), cat=val('dCat');
+  if(!quien) return decir('¿A quién le debes? Escribe el nombre','err');
+  if(monto<=0) return decir('Escribe cuánto le debes','err');
+  if(comoE==='PLATA'&&!qId) return decir('Escoge a qué cuenta entró la plata','err');
+  correr(()=>{
+    const ref='D'+(S.consDeuda+1);
+    PEND.cfg={consDeuda:S.consDeuda+1};
+    nuevoDoc('deudas',{ref,f,tipo,quien,concepto,monto,abonado:0,saldo:monto,
+      limite,estado:'ABIERTA',origen:comoE,cuenta:comoE==='PLATA'?qId:'',
+      cat:comoE==='GASTO'?cat:''});
+    if(comoE==='PLATA'){
+      mover(qId,'INGRESO',monto,'Préstamo de '+quien,f);
+      asiento(f,'Deuda '+ref+' · '+quien,[
+        {cuenta:'1105 Caja y bancos',d:monto},{cuenta:ctaDeuda(tipo),c:monto}]);
+    }else{
+      nuevoDoc('gastos',{f,cat:cat||'Otros',concepto:(concepto||'Gasto')+' · lo pagó '+quien,
+        monto,cuenta:'',porPagar:true,deuda:ref});
+      asiento(f,'Gasto por pagar '+ref+' · '+quien,[
+        {cuenta:'51'+(cat?'':'99')+' '+(cat||'Otros gastos'),d:monto},
+        {cuenta:ctaDeuda(tipo),c:monto}]);
+    }
+  },[],()=>{tmp.nuevaDeuda=false; tmp.dForm=null;
+    return 'Quedó registrado: le debes '+cop(monto)+' a '+quien});
+};
+/* Pasa una compra a crédito a "Lo que debo" para poder abonarle */
+A.deudaDeCompra=id=>{
+  const c=S.compras.find(x=>x._id===id); if(!c)return;
+  if(!c.credito) return decir('Esa compra ya la pagaste','err');
+  if(c.deuda) return decir('Esa compra ya está en Lo que debo','err');
+  if(c.estado==='ANULADA') return decir('Esa compra está anulada','err');
+  const quien=c.prov?(S.proveedores.find(p=>p.id===c.prov)||{n:c.prov}).n:'Proveedor';
+  if(!confirm('Pasar a "Lo que debo":\n'+quien+' · '+cop(c.total)+
+    '\n\nNo mueve plata ni inventario. Solo deja la deuda lista para abonarle.')) return;
+  const rC=doc(db,'compras',id);
+  correr(()=>{
+    const ref='D'+(S.consDeuda+1);
+    PEND.cfg={consDeuda:S.consDeuda+1};
+    // La deuda con el proveedor ya la creó la compra, por eso no se repite el asiento
+    nuevoDoc('deudas',{ref,f:c.f,tipo:'PROVEEDOR',quien,
+      concepto:'Compra '+(c.nro||c.ref),monto:c.total,abonado:0,saldo:c.total,
+      limite:'',estado:'ABIERTA',origen:'COMPRA',compra:c.ref,cuenta:'',cat:''});
+    PEND.updates.push({ref:rC,data:{deuda:ref}});
+  },[],()=>quien+' quedó en Lo que debo por '+cop(c.total));
+};
+A.abonarDeuda=id=>{
+  const d=S.deudas.find(x=>x._id===id); if(!d)return;
+  const m=prompt('Pago a '+d.quien+'\nLe debes '+cop(d.saldo)+
+    '\n\n¿Cuánto le vas a pagar?',d.saldo);
+  if(m===null)return;
+  const monto=+String(m).replace(/[^\d]/g,'');
+  if(!monto) return decir('Escribe cuánto','err');
+  const c=prompt('¿De qué cuenta sale la plata?\n'+
+    S.cuentas.map((q,i)=>(i+1)+'. '+q.n+' · '+cop(q.saldo)).join('\n'),'1');
+  if(c===null)return;
+  const qId=(S.cuentas[(+c||1)-1]||S.cuentas[0]).id, f=hoy(), rD=doc(db,'deudas',id);
+  correr(ex=>{
+    const d0=ex[0].data();
+    if(d0.estado==='ANULADA') throw new Error('Esa deuda está anulada');
+    if(monto>d0.saldo) throw new Error('Solo le debes '+cop(d0.saldo));
+    const abonado=(d0.abonado||0)+monto, saldo=d0.saldo-monto;
+    PEND.updates.push({ref:rD,data:{abonado,saldo,
+      estado:saldo<=0?'PAGADA':'PARCIAL'}});
+    mover(qId,'EGRESO',monto,'Pago a '+d0.quien+' '+d0.ref,f);
+    asiento(f,'Pago '+d0.ref+' · '+d0.quien,[
+      {cuenta:ctaDeuda(d0.tipo),d:monto},{cuenta:'1105 Caja y bancos',c:monto}]);
+    return {saldo};
+  },[rD],r=>'Pagaste '+cop(monto)+' de '+cuenta(qId).n+
+    (r.saldo>0?' · todavía le debes '+cop(r.saldo):' · queda en cero'));
+};
+A.anularDeuda=id=>{
+  const d=S.deudas.find(x=>x._id===id); if(!d)return;
+  if((d.abonado||0)>0) return decir('Esa deuda ya tiene abonos. Anúlalos primero o déjala','err');
+  if(!confirm('Anular la deuda con '+d.quien+' por '+cop(d.monto)+'?'+
+    (d.origen==='PLATA'?'\n\nTambién sale de la cuenta la plata que te entró.':''))) return;
+  const rD=doc(db,'deudas',id);
+  correr(ex=>{
+    const d0=ex[0].data();
+    if(d0.estado==='ANULADA') throw new Error('Ya estaba anulada');
+    if((d0.abonado||0)>0) throw new Error('Ya tiene abonos');
+    const f=hoy();
+    PEND.updates.push({ref:rD,data:{estado:'ANULADA',saldo:0}});
+    if(d0.origen==='PLATA'&&d0.cuenta){
+      mover(d0.cuenta,'EGRESO',d0.monto,'Anulación deuda '+d0.ref,f);
+      asiento(f,'Anulación deuda '+d0.ref,[
+        {cuenta:ctaDeuda(d0.tipo),d:d0.monto},{cuenta:'1105 Caja y bancos',c:d0.monto}]);
+    }else if(d0.origen==='GASTO'){
+      asiento(f,'Anulación deuda '+d0.ref,[
+        {cuenta:ctaDeuda(d0.tipo),d:d0.monto},
+        {cuenta:'51'+(d0.cat?'':'99')+' '+(d0.cat||'Otros gastos'),c:d0.monto}]);
+    }else{
+      asiento(f,'Anulación deuda '+d0.ref,[
+        {cuenta:ctaDeuda(d0.tipo),d:d0.monto},{cuenta:'3115 Capital',c:d0.monto}]);
+    }
+  },[rD],()=>'Deuda anulada');
 };
 
 /* --- Anular factura --- */
@@ -1960,7 +2078,28 @@ function vInicio(){
   <div class="card"><h3>Caja y bancos</h3>
     ${S.cuentas.map(q=>`<div class="item"><div class="t">${esc(q.n)}</div>
       <div class="m cifra">${cop(q.saldo)}</div></div>`).join('')}
-  </div>`;
+  </div>
+
+  `;
+}
+
+/* Cuánto vale el negocio hoy: lo que hay, menos lo que se debe.
+   Las compras a crédito que ya se pasaron a "Lo que debo" no se cuentan dos
+   veces, por eso se descartan las que tienen deuda. */
+function capital(){
+  const caja=S.cuentas.reduce((s,q)=>s+q.saldo,0);
+  const vLisas=Object.values(S.lisas).reduce((s,i)=>s+i.valor,0);
+  const vTerm=Object.values(S.terminados).reduce((s,i)=>s+i.valor,0);
+  const porCobrar=S.facturas.filter(f=>f.estado!=='ANULADA'&&f.saldo>0)
+    .reduce((s,f)=>s+f.saldo,0);
+  const ds=S.deudas.filter(d=>d.estado!=='ANULADA'&&d.saldo>0);
+  const socios=ds.filter(d=>d.tipo==='SOCIO').reduce((s,d)=>s+d.saldo,0);
+  const otras=ds.filter(d=>d.tipo!=='SOCIO').reduce((s,d)=>s+d.saldo,0);
+  const credito=S.compras.filter(c=>c.credito&&!c.deuda&&c.estado!=='ANULADA')
+    .reduce((s,c)=>s+c.total,0);
+  const tengo=caja+vLisas+vTerm+porCobrar, debo=socios+otras+credito;
+  return {caja,invL:vLisas,invT:vTerm,inv:vLisas+vTerm,porCobrar,socios,otras,credito,
+    tengo,debo,neto:tengo-debo};
 }
 
 /* ── Compras ────────────────────────────────────────────── */
@@ -2011,8 +2150,12 @@ function vCompras(){
   <div class="card"><h3>Compras recientes</h3>
     ${S.compras.slice(0,15).map(c=>`<div class="item">
       <div><div class="t">${esc(c.nro||c.ref)}${c.estado==='ANULADA'?' <span class="tag rojo">ANULADA</span>':''}</div>
-        <div class="s">${fecha(c.f)} · ${esc(c.prov||'sin proveedor')} · ${num(c.items.reduce((s,i)=>s+i.cant,0))} und</div>
+        <div class="s">${fecha(c.f)} · ${esc(c.prov||'sin proveedor')} · ${num(c.items.reduce((s,i)=>s+i.cant,0))} und${
+          c.credito?' · <span class="tag rojo">a crédito</span>':''}${
+          c.deuda?' · en Lo que debo ('+c.deuda+')':''}</div>
         ${c.estado!=='ANULADA'&&admin()?`<div style="margin-top:6px">
+          ${c.credito&&!c.deuda?`<button class="b n chico" style="margin-right:6px"
+            onclick="A.deudaDeCompra('${c._id}')">Pasar a Lo que debo</button>`:''}
           <button class="b g chico" onclick="A.anularCompra('${c._id}')">Anular</button></div>`:''}</div>
       <div class="m cifra">${cop(c.total)}</div></div>`).join('')||'<div class="vacio">Aún no has registrado compras.</div>'}
   </div>`;
@@ -2851,14 +2994,96 @@ function vCartera(){
     .sort((a,b)=>(a.limite||'9999').localeCompare(b.limite||'9999'));
   const total=deb.reduce((s,f)=>s+f.saldo,0);
   const venc=deb.filter(f=>f.limite&&f.limite<h);
+  // Lo que yo debo
+  const mis=S.deudas.filter(d=>d.saldo>0&&d.estado!=='ANULADA')
+    .sort((a,b)=>(a.limite||'9999').localeCompare(b.limite||'9999'));
+  const cap=capital();                         // incluye las compras a crédito sueltas
+  // Compras a crédito que todavía no están en "Lo que debo"
+  const sueltas=S.compras.filter(c=>c.credito&&!c.deuda&&c.estado!=='ANULADA');
+  const comoE=tmp.dComo||'PLATA';
+  const tipoD=tmp.dTipo||'SOCIO';
+  const fD=tmp.dForm||{};
   return `
   <div class="g2" style="margin-bottom:12px">
-    <div class="kpi"><div class="et">Total por cobrar</div><div class="v cifra">${cop(total)}</div>
-      <div class="d">${deb.length} facturas</div></div>
-    <div class="kpi"><div class="et">Vencido</div><div class="v cifra" style="color:var(--tinta)">${cop(venc.reduce((s,f)=>s+f.saldo,0))}</div>
-      <div class="d">${venc.length} facturas</div></div>
+    <div class="kpi"><div class="et">Me deben</div><div class="v cifra">${cop(total)}</div>
+      <div class="d">${deb.length} factura${deb.length===1?'':'s'}${
+      venc.length?' · '+venc.length+' vencida'+(venc.length===1?'':'s'):''}</div></div>
+    ${admin()?`<div class="kpi"><div class="et">Yo debo</div>
+      <div class="v cifra" style="color:var(--tinta)">${cop(cap.debo)}</div>
+      <div class="d">${mis.length} deuda${mis.length===1?'':'s'}${
+        cap.credito?' + '+cop(cap.credito)+' en compras a crédito':''}</div></div>`:''}
   </div>
-  <div class="card"><h3>Quién debe</h3>
+
+  ${admin()?`<div class="card"><h3>Lo que yo debo</h3>
+    <p style="font-size:12.5px;color:var(--suave);margin:0 0 10px">
+      Plata que le debes al socio, a un proveedor o a quien te prestó.
+      La mercancía a crédito se registra en Compras marcando "a crédito".</p>
+    ${sueltas.length?`<div class="aviso warn">
+      Tienes ${sueltas.length} compra${sueltas.length===1?'':'s'} a crédito sin pasar aquí:
+      ${sueltas.map(c=>`<div style="margin-top:7px">
+        <b>${esc(c.nro||c.ref)}</b> · ${cop(c.total)}
+        <button class="b g chico" style="margin-left:8px;min-height:32px"
+          onclick="A.deudaDeCompra('${c._id}')">Pasar a Lo que debo</button></div>`).join('')}
+    </div>`:''}
+    ${tmp.nuevaDeuda?`
+      <div class="g2">
+        <div><label>¿A quién le debes?</label>
+          <input id="dQuien" list="lProv" placeholder="Nombre del socio o proveedor"
+            value="${esc(fD.quien||'')}"></div>
+        <div><label>¿Qué es?</label>
+          <select id="dTipo" onchange="A.deudaCambia('dTipo',this.value)">
+            ${[['SOCIO','Socio'],['PROVEEDOR','Proveedor'],['OTRO','Otro']].map(([v,n])=>
+              `<option value="${v}"${tipoD===v?' selected':''}>${n}</option>`).join('')}
+          </select></div>
+      </div>
+      <datalist id="lProv">${S.proveedores.map(p=>`<option value="${esc(p.n)}">`).join('')}</datalist>
+      <label>¿Por qué se la debes?</label>
+      <input id="dConcepto" placeholder="Préstamo para el pedido, puso la mitad de la tela…"
+        value="${esc(fD.concepto||'')}">
+      <div class="g2">
+        <div><label>¿Cuánto?</label><input id="dMonto" inputmode="numeric" placeholder="0"
+          value="${esc(fD.monto||'')}"></div>
+        <div><label>Fecha</label><input type="date" id="dFecha" value="${esc(fD.fecha||h)}"></div>
+      </div>
+      <label>¿Qué pasó con esa plata?</label>
+      <select id="dComo" onchange="A.deudaCambia('dComo',this.value)">
+        <option value="PLATA"${comoE==='PLATA'?' selected':''}>Me entró la plata a una cuenta</option>
+        <option value="GASTO"${comoE==='GASTO'?' selected':''}>Pagó un gasto por mí</option>
+      </select>
+      ${comoE==='PLATA'
+        ?`<label>Entró a</label><select id="dCuenta">${optCuenta()}</select>`
+        :`<label>¿Qué gasto pagó?</label><select id="dCat">${
+            S.catGastos.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('')}</select>
+          <div style="font-size:12px;color:var(--suave);margin-top:5px">
+            Se registra el gasto aunque la plata no haya salido de tus cuentas.</div>`}
+      <label>Pagar antes de (opcional)</label>
+      <input type="date" id="dLimite" value="${esc(fD.limite||'')}">
+      <div class="g2" style="margin-top:12px">
+        <button class="b g" onclick="A.abrirDeuda(false)">Cancelar</button>
+        <button class="b" onclick="A.guardarDeuda()">Guardar la deuda</button>
+      </div>
+    `:`<button class="b" onclick="A.abrirDeuda(true)">+ Anotar una deuda</button>`}
+
+    ${mis.length?`<div style="margin-top:14px">${mis.map(d=>{
+      const vencida=d.limite&&d.limite<h;
+      return `<div class="item">
+        <div><div class="t">${esc(d.quien)}
+          <span class="tag">${d.tipo==='SOCIO'?'Socio':d.tipo==='PROVEEDOR'?'Proveedor':'Otro'}</span>
+          ${vencida?'<span class="tag rojo">vencida</span>':''}</div>
+          <div class="s">${d.ref} · ${fecha(d.f)}${d.concepto?' · '+esc(d.concepto):''}${
+            d.limite?' · pagar antes de '+fecha(d.limite):''}</div>
+          <div style="margin-top:6px">
+            <button class="b n chico" onclick="A.abonarDeuda('${d._id}')">Registrar pago</button>
+            ${admin()&&!(d.abonado>0)?`<button class="b g chico" style="margin-left:6px"
+              onclick="A.anularDeuda('${d._id}')">Anular</button>`:''}</div></div>
+        <div class="m"><span class="cifra">${cop(d.saldo)}</span>
+          ${d.abonado>0?`<div class="s cifra">de ${cop(d.monto)}</div>`:''}</div></div>`}).join('')}
+    </div>`:'<div class="vacio" style="padding:14px 8px">No le debes plata a nadie.</div>'}
+    ${S.deudas.some(d=>d.estado==='PAGADA')?`<div class="s" style="margin-top:10px">
+      Ya pagadas: ${S.deudas.filter(d=>d.estado==='PAGADA').map(d=>
+        esc(d.quien)+' '+cop(d.monto)).join(' · ')}</div>`:''}
+  </div>`:''}
+  <div class="card"><h3>Quién me debe a mí</h3>
     ${deb.length?deb.map(f=>{
       const vencida=f.limite&&f.limite<h;
       const dias=f.limite?Math.round((new Date(h)-new Date(f.limite))/864e5):null;
@@ -2893,7 +3118,16 @@ function vCaja(){
     return {q, e:m.filter(x=>x.tipo==='INGRESO').reduce((s,x)=>s+x.monto,0),
                s:m.filter(x=>x.tipo==='EGRESO').reduce((s,x)=>s+x.monto,0)};
   }).filter(x=>x.e||x.s);
+  const sec=tmp.cajaSec||'resumen';
+  const fr=tmp.cajaForm||'gasto';
+  const chip=(k,n,cual)=>`<button class="pchip ${(cual||sec)===k?'on':''}"
+    onclick="tmp.${cual?'cajaForm':'cajaSec'}='${k}';pintar()">${n}</button>`;
   return `
+  <div class="pasos" style="margin-bottom:12px">
+    ${chip('resumen','Resumen')}${chip('registrar','Registrar')}${chip('historial','Movimientos')}
+  </div>
+
+  ${sec==='resumen'?`
   <div class="card"><h3>Cierre del día</h3>
     <div class="g2">
       <div><label>Día</label><input type="date" value="${d}"
@@ -2917,7 +3151,10 @@ function vCaja(){
         fdia.length===1?'':'s'} · ${undD} camisetas</div></div></div>
     <div class="item"><div class="t">Costo de lo vendido</div>
       <div class="m cifra">−${cop(costoD)}</div></div>
-    <div class="item"><div class="t">Gastos del día</div>
+    <div class="item"><div class="t">Gastos del día
+      ${(()=>{const pp=gdia.filter(g=>g.porPagar).reduce((s,g)=>s+g.monto,0);
+        return pp?`<div class="s">incluye ${cop(pp)} que pagó otra persona ·
+          esa plata no salió de tus cuentas, quedó como deuda</div>`:''})()}</div>
       <div class="m cifra">−${cop(gastoD)}</div></div>
     <div class="item" style="border-top:1px solid var(--linea)">
       <div class="t"><b>Ganancia del día</b></div>
@@ -2940,41 +3177,59 @@ function vCaja(){
     </div>`:'<div class="vacio">Sin movimientos de dinero ese día.</div>'}
   </div>
 
-  <div class="card"><h3>Saldos</h3>
-    ${S.cuentas.map(q=>`<div class="item"><div class="t">${esc(q.n)}</div>
-      <div class="m cifra">${cop(q.saldo)}</div></div>`).join('')}
-    <div class="item" style="border-top:1px solid var(--linea)"><div class="t">Total</div>
-      <div class="m cifra">${cop(S.cuentas.reduce((s,q)=>s+q.saldo,0))}</div></div>
-  </div>
-
-  <div class="card"><h3>Pasar plata entre cuentas</h3>
-    <p style="font-size:13px;color:var(--suave);margin:0 0 12px">
-      Cuando sacas de Nequi al efectivo, consignas al banco, o una venta entró
-      a la cuenta equivocada.</p>
-    <div class="g2">
-      <div><label>Sale de</label><select id="tDe">${optCuenta()}</select></div>
-      <div><label>Entra a</label><select id="tA">${optCuenta()}</select></div>
+  <div class="card"><h3>Cuánto tengo y cuánto debo</h3>
+    <div class="rejilla">
+      ${S.cuentas.map(q=>`<div class="celdaCta">
+        <span>${esc(q.n)}</span>
+        <b class="cifra">${cop(q.saldo)}</b></div>`).join('')}
     </div>
-    <div class="g2">
-      <div><label>Fecha</label><input type="date" id="tFecha" value="${hoy()}"></div>
-      <div><label>Cuánto</label><input id="tMonto" inputmode="numeric" placeholder="0"></div>
-    </div>
-    <button class="b" style="margin-top:12px" onclick="A.traslado()">Pasar</button>
-  </div>
+    <div class="item" style="border-top:1px solid var(--linea)">
+      <div class="t"><b>Plata en cuentas</b></div>
+      <div class="m cifra"><b>${cop(S.cuentas.reduce((s,q)=>s+q.saldo,0))}</b></div></div>
+    ${admin()?(()=>{const c=capital();return `
+    <div class="item" style="margin-top:8px"><div class="t">Camisetas en bodega
+      <div class="s">lisas ${cop(c.invL)} · estampadas ${cop(c.invT)} · al costo, no al precio de venta</div></div>
+      <div class="m cifra">${cop(c.inv)}</div></div>
+    <div class="item"><div class="t">Lo que me deben
+      <div class="s">facturas fiadas sin cobrar</div></div>
+      <div class="m cifra">${cop(c.porCobrar)}</div></div>
+    <div class="item" style="border-top:1px solid var(--linea)">
+      <div class="t"><b>Lo que tengo</b></div>
+      <div class="m cifra"><b>${cop(c.tengo)}</b></div></div>
 
-  <div class="card"><h3>Saldo inicial · ajuste</h3>
-    <p style="font-size:13px;color:var(--suave);margin:0 0 12px">
-      Escribe cuánta plata hay <b>de verdad</b> en la cuenta. La app calcula la diferencia
-      y la registra como aporte tuyo. Úsalo al arrancar y cuando el saldo no cuadre.</p>
-    <div class="g2">
-      <div><label>Fecha</label><input type="date" id="sFecha" value="${hoy()}"></div>
-      <div><label>Cuenta</label><select id="sCuenta">${optCuenta()}</select></div>
-    </div>
-    <label>¿Cuánto hay realmente?</label>
-    <input id="sReal" inputmode="numeric" placeholder="0">
-    <button class="b" style="margin-top:12px" onclick="A.fijarSaldo()">Fijar saldo</button>
-  </div>
+    ${c.debo?`
+      ${c.socios?`<div class="item" style="margin-top:8px"><div class="t">Le debo al socio</div>
+        <div class="m cifra" style="color:var(--tinta)">−${cop(c.socios)}</div></div>`:''}
+      ${c.otras?`<div class="item"><div class="t">Le debo a proveedores y otros</div>
+        <div class="m cifra" style="color:var(--tinta)">−${cop(c.otras)}</div></div>`:''}
+      ${c.credito?`<div class="item"><div class="t">Compras a crédito sin pagar
+        <div class="s">pásalas a Lo que debo, en Cartera, para poder abonarles</div></div>
+        <div class="m cifra" style="color:var(--tinta)">−${cop(c.credito)}</div></div>`:''}
+      <div class="item" style="border-top:1px solid var(--linea)">
+        <div class="t"><b>Lo que debo</b></div>
+        <div class="m cifra" style="color:var(--tinta)"><b>−${cop(c.debo)}</b></div></div>
+    `:`<div class="item" style="margin-top:8px"><div class="t">No le debes plata a nadie</div>
+      <div class="m cifra">${cop(0)}</div></div>`}
 
+    <div class="item" style="border-top:2px solid var(--ink);border-bottom:0">
+      <div class="t" style="font-size:16px"><b>Mi capital</b></div>
+      <div class="m cifra" style="font-size:23px;color:${c.neto>=0?'var(--ok)':'var(--tinta)'}">
+        <b>${cop(c.neto)}</b></div></div>
+    <div style="font-size:11.5px;color:var(--suave);margin-top:7px">
+      Lo que hay en el negocio menos lo que debes. Un préstamo no lo cambia:
+      entra la plata y sube la deuda. Lo mueven las ventas, los gastos y lo que saques.</div>
+    ${c.neto<0?`<div class="aviso warn" style="margin:10px 0 0">
+      Debes más de lo que tienes.</div>`:''}
+    `})():''}
+  </div>
+  `:''}
+
+  ${sec==='registrar'?`
+  <div class="pasos chico" style="margin-bottom:12px">
+    ${chip('gasto','Gasto',fr)}${chip('mov','Entró o salió plata',fr)}
+    ${chip('traslado','Pasar entre cuentas',fr)}${chip('saldo','Ajustar saldo',fr)}
+  </div>
+  ${fr==='gasto'?`
   <div class="card"><h3>Registrar gasto</h3>
     <label>Categoría</label>
     <div style="display:flex;flex-wrap:wrap;gap:6px">
@@ -3000,7 +3255,8 @@ function vCaja(){
         <button class="b" onclick="A.guardarGasto()">Guardar gasto</button></div>
     </div>
   </div>
-
+  `:''}
+  ${fr==='mov'?`
   <div class="card"><h3>Entró o salió plata sin ser venta</h3>
     <p style="font-size:13px;color:var(--suave);margin:0 0 12px">
       Una consignación que todavía no sabes de quién es, plata que pones tú,
@@ -3021,7 +3277,40 @@ function vCaja(){
       <button class="b g" onclick="A.movManual('OUT')">Salió plata</button>
     </div>
   </div>
+  `:''}
+  ${fr==='traslado'?`
+  <div class="card"><h3>Pasar plata entre cuentas</h3>
+    <p style="font-size:13px;color:var(--suave);margin:0 0 12px">
+      Cuando sacas de Nequi al efectivo, consignas al banco, o una venta entró
+      a la cuenta equivocada.</p>
+    <div class="g2">
+      <div><label>Sale de</label><select id="tDe">${optCuenta()}</select></div>
+      <div><label>Entra a</label><select id="tA">${optCuenta()}</select></div>
+    </div>
+    <div class="g2">
+      <div><label>Fecha</label><input type="date" id="tFecha" value="${hoy()}"></div>
+      <div><label>Cuánto</label><input id="tMonto" inputmode="numeric" placeholder="0"></div>
+    </div>
+    <button class="b" style="margin-top:12px" onclick="A.traslado()">Pasar</button>
+  </div>
+  `:''}
+  ${fr==='saldo'?`
+  <div class="card"><h3>Saldo inicial · ajuste</h3>
+    <p style="font-size:13px;color:var(--suave);margin:0 0 12px">
+      Escribe cuánta plata hay <b>de verdad</b> en la cuenta. La app calcula la diferencia
+      y la registra como aporte tuyo. Úsalo al arrancar y cuando el saldo no cuadre.</p>
+    <div class="g2">
+      <div><label>Fecha</label><input type="date" id="sFecha" value="${hoy()}"></div>
+      <div><label>Cuenta</label><select id="sCuenta">${optCuenta()}</select></div>
+    </div>
+    <label>¿Cuánto hay realmente?</label>
+    <input id="sReal" inputmode="numeric" placeholder="0">
+    <button class="b" style="margin-top:12px" onclick="A.fijarSaldo()">Fijar saldo</button>
+  </div>
+  `:''}
+  `:''}
 
+  ${sec==='historial'?`
   <div class="card"><h3>Gastos de este mes</h3>
     ${(()=>{
       const mes=hoy().slice(0,7);
@@ -3086,7 +3375,8 @@ function vCaja(){
       });
       return out;
     })()}
-  </div>`;
+  </div>
+  `:''}`;
 }
 
 /* ── Reportes ───────────────────────────────────────────── */
