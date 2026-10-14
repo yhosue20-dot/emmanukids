@@ -1232,7 +1232,7 @@ A.abrirDeuda=abrir=>{ tmp.nuevaDeuda=abrir; if(!abrir) tmp.dForm=null; pintar() 
 A.guardarDeuda=()=>{
   const tipo=val('dTipo'), quien=val('dQuien').trim(), concepto=val('dConcepto').trim();
   const monto=nval('dMonto'), limite=val('dLimite'), f=val('dFecha')||hoy();
-  const comoE=val('dComo');                       // PLATA o GASTO
+  const comoE=val('dComo');            // SALDO (ya la debía) · PLATA · GASTO
   const qId=val('dCuenta'), cat=val('dCat');
   if(!quien) return decir('¿A quién le debes? Escribe el nombre','err');
   if(monto<=0) return decir('Escribe cuánto le debes','err');
@@ -1247,12 +1247,17 @@ A.guardarDeuda=()=>{
       mover(qId,'INGRESO',monto,'Préstamo de '+quien,f);
       asiento(f,'Deuda '+ref+' · '+quien,[
         {cuenta:'1105 Caja y bancos',d:monto},{cuenta:ctaDeuda(tipo),c:monto}]);
-    }else{
+    }else if(comoE==='GASTO'){
       nuevoDoc('gastos',{f,cat:cat||'Otros',concepto:(concepto||'Gasto')+' · lo pagó '+quien,
         monto,cuenta:'',porPagar:true,deuda:ref});
       asiento(f,'Gasto por pagar '+ref+' · '+quien,[
         {cuenta:'51'+(cat?'':'99')+' '+(cat||'Otros gastos'),d:monto},
         {cuenta:ctaDeuda(tipo),c:monto}]);
+    }else{
+      // Saldo inicial: la deuda ya venía de antes. No mueve plata ni es gasto de
+      // hoy; baja tu capital, que es lo que de verdad pasó.
+      asiento(f,'Saldo inicial de deuda '+ref+' · '+quien,[
+        {cuenta:'3115 Capital',d:monto},{cuenta:ctaDeuda(tipo),c:monto}]);
     }
   },[],()=>{tmp.nuevaDeuda=false; tmp.dForm=null;
     return 'Quedó registrado: le debes '+cop(monto)+' a '+quien});
@@ -3000,7 +3005,7 @@ function vCartera(){
   const cap=capital();                         // incluye las compras a crédito sueltas
   // Compras a crédito que todavía no están en "Lo que debo"
   const sueltas=S.compras.filter(c=>c.credito&&!c.deuda&&c.estado!=='ANULADA');
-  const comoE=tmp.dComo||'PLATA';
+  const comoE=tmp.dComo||'SALDO';
   const tipoD=tmp.dTipo||'SOCIO';
   const fD=tmp.dForm||{};
   return `
@@ -3047,15 +3052,20 @@ function vCartera(){
       </div>
       <label>¿Qué pasó con esa plata?</label>
       <select id="dComo" onchange="A.deudaCambia('dComo',this.value)">
-        <option value="PLATA"${comoE==='PLATA'?' selected':''}>Me entró la plata a una cuenta</option>
-        <option value="GASTO"${comoE==='GASTO'?' selected':''}>Pagó un gasto por mí</option>
+        <option value="SALDO"${comoE==='SALDO'?' selected':''}>Ya se la venía debiendo (saldo inicial)</option>
+        <option value="PLATA"${comoE==='PLATA'?' selected':''}>Hoy me entró la plata a una cuenta</option>
+        <option value="GASTO"${comoE==='GASTO'?' selected':''}>Hoy pagó un gasto por mí</option>
       </select>
-      ${comoE==='PLATA'
-        ?`<label>Entró a</label><select id="dCuenta">${optCuenta()}</select>`
-        :`<label>¿Qué gasto pagó?</label><select id="dCat">${
+      ${comoE==='PLATA'?`<label>Entró a</label><select id="dCuenta">${optCuenta()}</select>
+          <div style="font-size:12px;color:var(--suave);margin-top:5px">
+            El saldo de esa cuenta sube. Úsalo solo si la plata te entró hoy.</div>`
+        :comoE==='GASTO'?`<label>¿Qué gasto pagó?</label><select id="dCat">${
             S.catGastos.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('')}</select>
           <div style="font-size:12px;color:var(--suave);margin-top:5px">
-            Se registra el gasto aunque la plata no haya salido de tus cuentas.</div>`}
+            Se registra el gasto de hoy aunque la plata no haya salido de tus cuentas.</div>`
+        :`<div class="aviso ok" style="margin:6px 0 0">
+            No mueve ninguna cuenta ni registra gastos: solo deja anotado lo que ya
+            le debías. Lo que hace es bajar tu capital, que es lo que de verdad pasó.</div>`}
       <label>Pagar antes de (opcional)</label>
       <input type="date" id="dLimite" value="${esc(fD.limite||'')}">
       <div class="g2" style="margin-top:12px">
