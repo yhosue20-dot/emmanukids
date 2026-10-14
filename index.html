@@ -1219,6 +1219,31 @@ A.abonar=facId=>{
   },[ref],()=>'Abono de '+cop(monto)+' registrado en '+cuenta(qId).n);
 };
 
+/* Estado de cuenta de una deuda: arranque + cada préstamo y cada pago, con
+   fecha, cuenta, nota y el saldo que quedó. Las deudas registradas antes de
+   que existiera el historial se reconstruyen con los movimientos de caja. */
+function cuentaDeuda(d){
+  let movs=(d.hist||[]).map(x=>({...x}));
+  if(!movs.length&&d.ref){
+    movs=S.caja.filter(m=>m.concepto&&m.concepto.indexOf(d.ref)>=0)
+      .slice().reverse()
+      .map(m=>({f:m.f,t:m.tipo==='EGRESO'?'PAGO':'PRESTO',m:m.monto,cta:m.cuenta,
+        nota:(m.concepto.split(' · ')[1]||'')}));
+  }
+  const sumaPrest=movs.filter(x=>x.t==='PRESTO').reduce((s,x)=>s+x.m,0);
+  let saldo=(d.monto||0)-sumaPrest;                 // con lo que arrancó
+  const filas=[{f:d.f,txt:'Arrancó debiendo'+(d.concepto?' · '+d.concepto:''),
+    m:0,saldo,ini:true}];
+  movs.forEach(x=>{
+    saldo+=x.t==='PAGO'?-x.m:x.m;
+    const donde=x.cta?cuenta(x.cta).n:(x.cat||'');
+    filas.push({f:x.f,t:x.t,m:x.m,saldo,
+      txt:(x.t==='PAGO'?'Le pagué':'Me prestó')+(donde?' · '+donde:'')+
+          (x.nota?' · '+x.nota:'')});
+  });
+  return {filas,saldo};
+}
+
 /* ═══════ LO QUE YO DEBO (socios, proveedores, préstamos) ═══════ */
 /* La cuenta contable depende de a quién se le debe */
 const ctaDeuda=t=>t==='SOCIO'?'2305 Socios':'2205 Proveedores';
@@ -1245,7 +1270,7 @@ A.guardarDeuda=()=>{
       limite,estado:'ABIERTA',origen:comoE,cuenta:comoE==='PLATA'?qId:'',
       cat:comoE==='GASTO'?cat:''});
     if(comoE==='PLATA'){
-      mover(qId,'INGRESO',monto,'Préstamo de '+quien,f);
+      mover(qId,'INGRESO',monto,'Préstamo de '+quien+' '+ref+(concepto?' · '+concepto:''),f);
       asiento(f,'Deuda '+ref+' · '+quien,[
         {cuenta:'1105 Caja y bancos',d:monto},{cuenta:ctaDeuda(tipo),c:monto}]);
     }else if(comoE==='GASTO'){
@@ -1293,6 +1318,8 @@ A.abonarDeuda=id=>{
   const c=prompt('¿De qué cuenta sale la plata?\n'+
     S.cuentas.map((q,i)=>(i+1)+'. '+q.n+' · '+cop(q.saldo)).join('\n'),'1');
   if(c===null)return;
+  const nota=prompt('¿De qué es este pago? (opcional)\n'+
+    'Ej: abono de la venta del sábado, le pasé por Nequi','')||'';
   const qId=(S.cuentas[(+c||1)-1]||S.cuentas[0]).id, f=hoy(), rD=doc(db,'deudas',id);
   correr(ex=>{
     const d0=ex[0].data();
@@ -1300,13 +1327,81 @@ A.abonarDeuda=id=>{
     if(monto>d0.saldo) throw new Error('Solo le debes '+cop(d0.saldo));
     const abonado=(d0.abonado||0)+monto, saldo=d0.saldo-monto;
     PEND.updates.push({ref:rD,data:{abonado,saldo,
-      estado:saldo<=0?'PAGADA':'PARCIAL'}});
-    mover(qId,'EGRESO',monto,'Pago a '+d0.quien+' '+d0.ref,f);
+      estado:saldo<=0?'PAGADA':'PARCIAL',
+      hist:[...(d0.hist||[]),{f,t:'PAGO',m:monto,cta:qId,nota}]}});
+    mover(qId,'EGRESO',monto,'Pago a '+d0.quien+' '+d0.ref+(nota?' · '+nota:''),f);
     asiento(f,'Pago '+d0.ref+' · '+d0.quien,[
       {cuenta:ctaDeuda(d0.tipo),d:monto},{cuenta:'1105 Caja y bancos',c:monto}]);
     return {saldo};
   },[rD],r=>'Pagaste '+cop(monto)+' de '+cuenta(qId).n+
     (r.saldo>0?' · todavía le debes '+cop(r.saldo):' · queda en cero'));
+};
+/* Le volvió a prestar: sube la misma cuenta en vez de abrir otra deuda.
+   Así queda una sola cuenta por persona, que sube y baja. */
+A.masDeuda=id=>{
+  const d=S.deudas.find(x=>x._id===id); if(!d)return;
+  if(d.estado==='ANULADA') return decir('Esa deuda está anulada','err');
+  const m=prompt(d.quien+' te vuelve a prestar\nAhora le debes '+cop(d.saldo)+
+    '\n\n¿Cuánto te prestó ahora?','');
+  if(m===null)return;
+  const monto=+String(m).replace(/[^\d]/g,'');
+  if(!monto) return decir('Escribe cuánto','err');
+  const o=prompt('¿Qué pasó con esa plata?\n\n'+
+    '1) Me entró a una cuenta\n'+
+    '2) Pagó un gasto por mí\n'+
+    '3) Ninguna de las dos (solo quedé debiendo más)','1');
+  if(o===null)return;
+  const op=({'1':'PLATA','2':'GASTO','3':'SALDO'})[String(o).trim()];
+  if(!op) return decir('Opción inválida','err');
+  let qId='', cat='';
+  if(op==='PLATA'){
+    const c=prompt('¿A qué cuenta te entró?\n'+
+      S.cuentas.map((q,i)=>(i+1)+'. '+q.n).join('\n'),'1');
+    if(c===null)return;
+    qId=(S.cuentas[(+c||1)-1]||S.cuentas[0]).id;
+  }else if(op==='GASTO'){
+    const g=prompt('¿Qué gasto pagó?\n'+
+      S.catGastos.map((x,i)=>(i+1)+'. '+x).join('\n'),'1');
+    if(g===null)return;
+    cat=S.catGastos[(+g||1)-1]||S.catGastos[0]||'Otros';
+  }
+  const nota=prompt('¿Para qué fue? (opcional)\n'+
+    'Ej: para el pedido de 300 lisas, puso la mitad del rollo DTF','')||'';
+  const f=hoy(), rD=doc(db,'deudas',id);
+  correr(ex=>{
+    const d0=ex[0].data();
+    if(d0.estado==='ANULADA') throw new Error('Esa deuda está anulada');
+    const total=(d0.monto||0)+monto, saldo=(d0.saldo||0)+monto;
+    PEND.updates.push({ref:rD,data:{monto:total,saldo,
+      estado:(d0.abonado||0)>0?'PARCIAL':'ABIERTA',
+      hist:[...(d0.hist||[]),{f,t:'PRESTO',m:monto,como:op,cta:qId,cat,nota}]}});
+    if(op==='PLATA'){
+      mover(qId,'INGRESO',monto,'Préstamo de '+d0.quien+' '+d0.ref+(nota?' · '+nota:''),f);
+      asiento(f,'Más deuda '+d0.ref+' · '+d0.quien,[
+        {cuenta:'1105 Caja y bancos',d:monto},{cuenta:ctaDeuda(d0.tipo),c:monto}]);
+    }else if(op==='GASTO'){
+      nuevoDoc('gastos',{f,cat,desc:'Lo pagó '+d0.quien,monto,cuenta:'',
+        porPagar:true,deuda:d0.ref});
+      asiento(f,'Gasto por pagar '+d0.ref+' · '+d0.quien,[
+        {cuenta:'51 '+cat,d:monto},{cuenta:ctaDeuda(d0.tipo),c:monto}]);
+    }else{
+      asiento(f,'Más deuda '+d0.ref+' · '+d0.quien,[
+        {cuenta:'3115 Capital',d:monto},{cuenta:ctaDeuda(d0.tipo),c:monto}]);
+    }
+    return {saldo};
+  },[rD],r=>'Ahora le debes '+cop(r.saldo)+' a '+d.quien);
+};
+/* Le manda la cuenta por WhatsApp, para que los dos vean lo mismo */
+A.cuentaWhats=id=>{
+  const d=S.deudas.find(x=>x._id===id); if(!d)return;
+  const ct=cuentaDeuda(d);
+  const t=['*'+(S.empresa.nombre||'EMMANUKIDS')+'* · cuenta con '+d.quien,
+    fecha(hoy()),''].concat(
+    ct.filas.map(r=>fecha(r.f)+' · '+r.txt+
+      (r.t==='PRESTO'?'  +'+cop(r.m):r.t==='PAGO'?'  -'+cop(r.m):'')+
+      '  → quedó '+cop(r.saldo)),
+    ['','*Le debo hoy: '+cop(d.saldo)+'*']).join('\n');
+  window.open('https://wa.me/?text='+encodeURIComponent(t),'_blank');
 };
 A.anularDeuda=id=>{
   const d=S.deudas.find(x=>x._id===id); if(!d)return;
@@ -3109,12 +3204,36 @@ function vCartera(){
           ${vencida?'<span class="tag rojo">vencida</span>':''}</div>
           <div class="s">${d.ref} · ${fecha(d.f)}${d.concepto?' · '+esc(d.concepto):''}${
             d.limite?' · pagar antes de '+fecha(d.limite):''}</div>
-          <div style="margin-top:6px">
-            <button class="b n chico" onclick="A.abonarDeuda('${d._id}')">Registrar pago</button>
-            ${admin()&&!(d.abonado>0)?`<button class="b g chico" style="margin-left:6px"
-              onclick="A.anularDeuda('${d._id}')">Anular</button>`:''}</div></div>
+          <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px">
+            <button class="b n chico" onclick="A.abonarDeuda('${d._id}')">Le pagué</button>
+            <button class="b g chico" onclick="A.masDeuda('${d._id}')">Me prestó más</button>
+            <button class="b g chico"
+              onclick="tmp.verHist=${tmp.verHist===d._id?'null':`'${d._id}'`};pintar()">
+              ${tmp.verHist===d._id?'Ocultar la cuenta':'Ver la cuenta detallada'}</button>
+            ${admin()&&!(d.abonado>0)&&!(d.hist||[]).length?`<button class="b g chico"
+              onclick="A.anularDeuda('${d._id}')">Anular</button>`:''}</div>
+          ${tmp.verHist===d._id?(()=>{const ct=cuentaDeuda(d);return `
+          <div style="margin-top:9px;padding:10px 12px;background:#F7F8FA;border-radius:11px">
+            <div class="scroll"><table class="malla" style="font-size:12.5px;width:100%">
+              <tr><th>Fecha</th><th>Movimiento</th><th class="n">Me prestó</th>
+                <th class="n">Le pagué</th><th class="n">Le debo</th></tr>
+              ${ct.filas.map(r=>`<tr>
+                <td style="white-space:nowrap">${fecha(r.f)}</td>
+                <td style="white-space:normal;max-width:260px">${esc(r.txt)}</td>
+                <td class="n" style="color:var(--tinta)">${r.t==='PRESTO'?'+'+cop(r.m):''}</td>
+                <td class="n" style="color:var(--ok)">${r.t==='PAGO'?'−'+cop(r.m):''}</td>
+                <td class="n"><b>${cop(r.saldo)}</b></td></tr>`).join('')}
+              <tr class="pie"><td colspan="4">Le debes hoy</td>
+                <td class="n">${cop(d.saldo)}</td></tr>
+            </table></div>
+            ${Math.round(ct.saldo)!==Math.round(d.saldo)?`<div class="s" style="margin-top:6px">
+              Faltan movimientos viejos de esta cuenta: el detalle suma ${cop(ct.saldo)}
+              y el saldo real es ${cop(d.saldo)}. Lo de aquí en adelante sí queda completo.</div>`:''}
+            <button class="b g chico" style="margin-top:9px"
+              onclick="A.cuentaWhats('${d._id}')">Enviarle la cuenta por WhatsApp</button>
+          </div>`})():''}</div>
         <div class="m"><span class="cifra">${cop(d.saldo)}</span>
-          ${d.abonado>0?`<div class="s cifra">de ${cop(d.monto)}</div>`:''}</div></div>`}).join('')}
+          ${d.abonado>0?`<div class="s cifra">abonado ${cop(d.abonado)}</div>`:''}</div></div>`}).join('')}
     </div>`:'<div class="vacio" style="padding:14px 8px">No le debes plata a nadie.</div>'}
     ${S.deudas.some(d=>d.estado==='PAGADA')?`<div class="s" style="margin-top:10px">
       Ya pagadas: ${S.deudas.filter(d=>d.estado==='PAGADA').map(d=>
