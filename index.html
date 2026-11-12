@@ -182,7 +182,7 @@ function init(){
         S.cfg.lineas.forEach(l=>{ if(!l.disenos) l.disenos=[]; }); }
       render();
     }));
-    unsubs.push(db.collection("local_stock").onSnapshot(s=>{
+    unsubs.push(db.collection("local_stock").onSnapshot({includeMetadataChanges:true}, s=>{
       const m={}; s.docs.forEach(d=>{ m[d.id]={id:d.id,...d.data()}; }); S.stock=m;
       S.ready=true; $("#status").textContent = s.metadata.fromCache ? "● Sin internet (guardando local)" : "● En línea"; render();
     }, e=>{ $("#status").textContent="Error: "+e.code; }));
