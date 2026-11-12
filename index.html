@@ -101,6 +101,7 @@ input[type=text],input[type=number],input[type=date],select,textarea{width:100%;
   <button data-tab="local"><span class="ic">👕</span>Local</button>
   <button data-tab="taller"><span class="ic">🧵</span>Taller</button>
   <button data-tab="ventas"><span class="ic">💰</span>Ventas</button>
+  <button data-tab="caja"><span class="ic">💵</span>Caja</button>
   <button data-tab="ajustes"><span class="ic">⚙️</span>Ajustes</button>
 </nav>
 
@@ -129,11 +130,11 @@ const DEFAULT_CFG = {
     {id:"vibe", nombre:"Vibe", porDiseno:true, disenos:[], detal:48000, mayor:37000},
     {id:"oversize", nombre:"Oversize Girls", porDiseno:false, disenos:[], detal:38000, mayor:29000}
   ],
-  metodos: ["Efectivo","Transferencia","Nequi"],
+  metodos: ["Efectivo","Transferencia","Nequi","99 Envíos"],
   alertaMin: 2
 };
 
-const S = { db:null, cfg:JSON.parse(JSON.stringify(DEFAULT_CFG)), stock:{}, movs:[], tab:"inicio", lineaSel:"graphic", fecha:hoy(), ready:false };
+const S = { caja:null, db:null, cfg:JSON.parse(JSON.stringify(DEFAULT_CFG)), stock:{}, movs:[], tab:"inicio", lineaSel:"graphic", fecha:hoy(), ready:false };
 
 // ---------- Utilidades ----------
 function hoy(d=new Date()){ const z=n=>String(n).padStart(2,"0"); return d.getFullYear()+"-"+z(d.getMonth()+1)+"-"+z(d.getDate()); }
@@ -176,6 +177,7 @@ function init(){
     unsubs.forEach(f=>f()); unsubs=[];
     if(!u){ S.db=null; S.ready=false; $("#status").textContent="Sin sesión"; openLogin(); return; }
     closeSheet(); S.db = db; $("#status").textContent="Cargando…";
+    unsubs.push(db.doc("local_config/caja").onSnapshot(s=>{ S.caja = s.exists ? s.data() : null; render(); }));
     unsubs.push(db.doc("local_config/main").onSnapshot(s=>{
       const d = s.exists ? s.data() : null;
       if(d && d.tallas){ S.cfg = Object.assign(JSON.parse(JSON.stringify(DEFAULT_CFG)), d);
@@ -222,7 +224,7 @@ async function importar(file){
 function render(){
   document.querySelectorAll("#tabs button").forEach(b=>b.classList.toggle("on", b.dataset.tab===S.tab));
   const v = $("#view");
-  v.innerHTML = ({inicio:vInicio, local:vLocal, taller:vTaller, ventas:vVentas, ajustes:vAjustes})[S.tab]();
+  v.innerHTML = ({inicio:vInicio, local:vLocal, taller:vTaller, ventas:vVentas, caja:vCaja, ajustes:vAjustes})[S.tab]();
 }
 
 function resumenDia(f){
@@ -263,6 +265,7 @@ function vInicio(){
 }
 
 function movHTML(m){
+  if(m.tipo==="caja") return `<div class="mov"><div><span class="tag" style="background:${m.anulada?"#bbb":"var(--yellow)"}">${m.anulada?"Anulado":{gasto:"Gasto",ingreso:"Ingreso",traslado:"Traslado"}[m.sub]}</span><span class="mut">${horaDe(m.ts)}</span><div style="font-size:14px;margin-top:4px">${esc(m.cuenta)}${m.destino?" → "+esc(m.destino):""}${m.nota?" · "+esc(m.nota):""}</div></div><div><b>${money(m.monto)}</b></div></div>`;
   const t = m.anulada ? "anulada" : m.tipo;
   const label = {venta:"Venta",estampado:"Estampado",entrada:"Entrada",ajuste:"Ajuste",anulada:"Anulada"}[t];
   const desc = (m.items||[]).map(i=>`${i.q}× ${nom(i)} T${i.t}`).join(", ");
@@ -527,6 +530,63 @@ async function guardarEntrada(otro){
   toast(`+${q} lisas ${N.color} T${N.t} ✅`);
   if(otro){ N.t=null; drawEntrada(); } else closeSheet();
 }
+
+// ---- CAJA (dinero) ----
+function cuentas(){ const c=[...S.cfg.metodos]; Object.keys((S.caja||{}).base||{}).forEach(k=>{ if(!c.includes(k)) c.push(k); }); return c; }
+function saldos(){
+  const base=(S.caja||{}).base||{}, ts0=(S.caja||{}).ts||0, s={};
+  cuentas().forEach(k=>s[k]=base[k]||0);
+  S.movs.filter(m=>m.ts>=ts0).forEach(m=>{
+    if(m.tipo==="venta" && !m.anulada){ if(m.pagos) Object.entries(m.pagos).forEach(([k,v])=>s[k]=(s[k]||0)+v); else s[m.metodo]=(s[m.metodo]||0)+m.total; }
+    if(m.tipo==="caja" && !m.anulada){
+      if(m.sub==="ingreso") s[m.cuenta]=(s[m.cuenta]||0)+m.monto;
+      if(m.sub==="gasto") s[m.cuenta]=(s[m.cuenta]||0)-m.monto;
+      if(m.sub==="traslado"){ s[m.cuenta]=(s[m.cuenta]||0)-m.monto; s[m.destino]=(s[m.destino]||0)+m.monto; }
+    }
+  });
+  return s;
+}
+function vCaja(){
+  const s=saldos(), tot=Object.values(s).reduce((a,b)=>a+b,0);
+  const cm=S.movs.filter(m=>m.tipo==="caja").slice(0,30);
+  const gastosHoy=S.movs.filter(m=>m.tipo==="caja"&&m.sub==="gasto"&&m.fecha===hoy()&&!m.anulada).reduce((a,m)=>a+m.monto,0);
+  return `<h2>💵 Caja</h2>
+  <div class="card"><div class="mut">Total en todas las cuentas</div><div class="big">${money(tot)}</div>
+    ${S.caja?"":'<div class="warn">Aún no hay saldos iniciales.</div>'}
+    <div class="mut">Gastos de hoy: ${money(gastosHoy)}</div></div>
+  <div class="card">${Object.entries(s).map(([k,v])=>`<div class="mov"><div>${esc(k)}</div><div><b>${money(v)}</b></div></div>`).join("")}</div>
+  <div class="grid3">
+    <button class="act" style="background:var(--red)" onclick="openCaja('gasto')"><span class="ic">💸</span>Gasto</button>
+    <button class="act" style="background:var(--green)" onclick="openCaja('ingreso')"><span class="ic">➕</span>Ingreso</button>
+    <button class="act" style="background:var(--blue)" onclick="openCaja('traslado')"><span class="ic">🔁</span>Traslado</button>
+  </div>
+  <div class="hint">Las ventas suman solas a su cuenta según el medio de pago.</div>
+  <h2>Movimientos de caja</h2>
+  <div class="card">${cm.map(m=>`<div class="mov"><div><span class="tag" style="background:${m.anulada?"#bbb":{gasto:"var(--red)",ingreso:"var(--green)",traslado:"var(--blue)"}[m.sub]}">${m.anulada?"Anulado":{gasto:"Gasto",ingreso:"Ingreso",traslado:"Traslado"}[m.sub]}</span><span class="mut">${m.fecha} ${horaDe(m.ts)}</span><div style="font-size:14px;margin-top:4px">${esc(m.cuenta)}${m.sub==="traslado"?" → "+esc(m.destino):""}${m.nota?` · <span class="mut">${esc(m.nota)}</span>`:""}</div></div><div style="text-align:right"><b>${money(m.monto)}</b>${m.anulada?"":`<div><button class="x" style="font-size:12px" onclick="anularCaja('${m.id}')">anular</button></div>`}</div></div>`).join("")||'<div class="empty">Sin movimientos de caja</div>'}</div>`;
+}
+let C;
+function openCaja(sub){ C={sub,cuenta:S.cfg.metodos[0],destino:null}; drawCaja(); }
+function drawCaja(){
+  const t={gasto:"💸 Gasto",ingreso:"➕ Ingreso",traslado:"🔁 Traslado"}[C.sub];
+  openSheet(`<div class="row" style="justify-content:space-between"><h3>${t}</h3><button class="x" onclick="closeSheet()">✕</button></div>
+    <label>${C.sub==="traslado"?"Sale de":"Cuenta"}</label>${chips("cc", cuentas(), C.cuenta)}
+    ${C.sub==="traslado"?`<label>Entra a</label>${chips("cd", cuentas().filter(k=>k!==C.cuenta), C.destino)}`:""}
+    <label>Monto</label><input type="number" id="cmonto" inputmode="numeric" value="${C.monto||""}">
+    <label>Concepto</label><input type="text" id="cnota" value="${esc(C.nota||"")}" placeholder="${C.sub==="gasto"?"Ej: bolsas, almuerzo, envío":"Ej: abono cliente"}">
+    <div style="height:14px"></div><button class="btn" onclick="guardarCaja()">Guardar</button>`);
+  const keep=()=>{ C.monto=$("#cmonto").value; C.nota=$("#cnota").value; };
+  $("#sheet").querySelectorAll("[data-cc]").forEach(b=>b.onclick=()=>{keep();C.cuenta=b.dataset.cc;if(C.destino===C.cuenta)C.destino=null;drawCaja();});
+  $("#sheet").querySelectorAll("[data-cd]").forEach(b=>b.onclick=()=>{keep();C.destino=b.dataset.cd;drawCaja();});
+}
+async function guardarCaja(){
+  if(!S.db) return toast("Sin conexión");
+  const monto=+$("#cmonto").value||0, nota=$("#cnota").value.trim();
+  if(monto<=0) return toast("Pon el monto");
+  if(C.sub==="traslado" && !C.destino) return toast("Escoge a qué cuenta entra");
+  const m={tipo:"caja", sub:C.sub, cuenta:C.cuenta, monto, nota, items:[]}; if(C.sub==="traslado") m.destino=C.destino;
+  closeSheet(); await addMov(m); toast("Guardado ✅");
+}
+async function anularCaja(id){ if(!S.db) return; await S.db.collection("local_movs").doc(id).update({anulada:true}); toast("Anulado"); }
 
 // ---- AJUSTE / CONTEO ----
 function openAjuste(ubic,lid,v,t,c){
